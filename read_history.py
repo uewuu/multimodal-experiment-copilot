@@ -57,8 +57,11 @@ def show_validation_app_keys(history: dict) -> None:
     for key in app_history:
         print(key)
 
-def show_validation_r2_summary(history: dict) -> dict:
-    """显示验证集 R² 记录摘要，并查找最佳验证 R²。"""
+def analyze_validation_metric(
+    history: dict,
+    metric_name: str,
+) -> dict:
+    """分析指定验证集指标，并返回结构化摘要。"""
     valid_history = history.get("valid")
 
     if not isinstance(valid_history, dict):
@@ -69,59 +72,77 @@ def show_validation_r2_summary(history: dict) -> dict:
     if not isinstance(app_history, dict):
         raise ValueError("valid 节点中缺少有效的 app 字典。")
 
-    r2_history = app_history.get("r2")
+    metric_history = app_history.get(metric_name)
 
-    if not isinstance(r2_history, list):
-        raise ValueError("valid.app 节点中缺少有效的 r2 列表。")
+    if not isinstance(metric_history, list):
+        raise ValueError(
+            f"valid.app 节点中缺少有效的 {metric_name} 列表。"
+        )
 
-    print()
-    print("验证集 R² 记录摘要")
-    print("-" * 50)
-    print(f"记录数量：{len(r2_history)}")
-
-    if not r2_history:
-        raise ValueError("验证集 R² 记录为空。")
-
-    first_record = r2_history[0]
-    last_record = r2_history[-1]
-
-    print(f"第一条记录：{first_record}")
-    print(f"最后一条记录：{last_record}")
+    if not metric_history:
+        raise ValueError(f"验证集 {metric_name} 记录为空。")
 
     best_epoch = None
-    best_r2 = None
+    best_value = None
 
-    for record in r2_history:
+    for record in metric_history:
         if not isinstance(record, list) or len(record) != 2:
             raise ValueError(
-                "R² 记录格式不正确，预期格式为 [epoch, r2_value]。"
+                f"{metric_name} 记录格式不正确，"
+                "预期格式为 [epoch, metric_value]。"
             )
 
-        epoch, r2_value = record
+        epoch, metric_value = record
 
         if not isinstance(epoch, int):
-            raise ValueError("R² 记录中的 Epoch 不是整数。")
+            raise ValueError(
+                f"{metric_name} 记录中的 Epoch 不是整数。"
+            )
 
-        if not isinstance(r2_value, (int, float)):
-            raise ValueError("R² 记录中的指标值不是数字。")
+        if not isinstance(metric_value, (int, float)):
+            raise ValueError(
+                f"{metric_name} 记录中的指标值不是数字。"
+            )
 
-        if best_r2 is None or r2_value > best_r2:
+        if best_value is None or metric_value > best_value:
             best_epoch = epoch
-            best_r2 = r2_value
+            best_value = metric_value
 
-    print(f"最佳验证 R²：{best_r2:.6f}")
-    print(f"最佳 R² 对应 Epoch：{best_epoch}")
-    
+    first_record = metric_history[0]
+    last_record = metric_history[-1]
+
     summary = {
-    "record_count": len(r2_history),
-    "first_epoch": first_record[0],
-    "first_r2": first_record[1],
-    "last_epoch": last_record[0],
-    "last_r2": last_record[1],
-    "best_epoch": best_epoch,
-    "best_r2": best_r2,
+        "metric_name": metric_name,
+        "record_count": len(metric_history),
+        "first_epoch": first_record[0],
+        "first_value": first_record[1],
+        "last_epoch": last_record[0],
+        "last_value": last_record[1],
+        "best_epoch": best_epoch,
+        "best_value": best_value,
     }
+
     return summary
+
+
+def show_metric_summary(summary: dict) -> None:
+    """显示单个验证集指标的结构化摘要。"""
+    metric_name = summary["metric_name"].upper()
+
+    print()
+    print(f"验证集 {metric_name} 记录摘要")
+    print("-" * 50)
+    print(f"记录数量：{summary['record_count']}")
+    print(
+        f"第一条记录："
+        f"[{summary['first_epoch']}, {summary['first_value']}]"
+    )
+    print(
+        f"最后一条记录："
+        f"[{summary['last_epoch']}, {summary['last_value']}]"
+    )
+    print(f"最佳验证 {metric_name}：{summary['best_value']:.6f}")
+    print(f"最佳 {metric_name} 对应 Epoch：{summary['best_epoch']}")
 
 def main() -> None:
     try:
@@ -129,12 +150,17 @@ def main() -> None:
         show_top_level_keys(history)
         show_validation_keys(history)
         show_validation_app_keys(history)
-        r2_summary = show_validation_r2_summary(history)
+        r2_summary = analyze_validation_metric(history, "r2")
+        racc_summary = analyze_validation_metric(history, "racc")
+
+        show_metric_summary(r2_summary)
+        show_metric_summary(racc_summary)
 
         print()
-        print("结构化 R² 摘要")
+        print("结构化指标摘要")
         print("-" * 50)
         print(r2_summary)
+        print(racc_summary)
 
     except FileNotFoundError:
         print(f"错误：没有找到历史文件：{HISTORY_PATH}")
