@@ -1,12 +1,14 @@
 from pathlib import Path
 import json
 
+from read_config import CONFIG_PATH
+from read_history import HISTORY_PATH
 from summarize_experiment import build_experiment_summary
 
 
 OUTPUT_DIR = Path("outputs")
-SUMMARY_JSON_PATH = OUTPUT_DIR / "experiment_summary.json"
-REPORT_MD_PATH = OUTPUT_DIR / "experiment_report.md"
+SUMMARY_JSON_FILENAME = "experiment_summary.json"
+REPORT_MD_FILENAME = "experiment_report.md"
 
 
 def write_summary_json(summary: dict, output_path: Path) -> None:
@@ -143,17 +145,34 @@ def write_markdown_report(
         file.write(report_content)
 
 
-def main() -> None:
-    summary = build_experiment_summary()
+def generate_experiment_report(
+    config_path: Path = CONFIG_PATH,
+    history_path: Path = HISTORY_PATH,
+    output_dir: Path = OUTPUT_DIR,
+) -> tuple[Path, Path]:
+    """读取实验文件并生成 JSON 摘要和 Markdown 报告。"""
+    summary = build_experiment_summary(
+        config_path=config_path,
+        history_path=history_path,
+    )
     report_content = build_markdown_report(summary)
 
-    write_summary_json(summary, SUMMARY_JSON_PATH)
-    write_markdown_report(report_content, REPORT_MD_PATH)
+    summary_json_path = output_dir / SUMMARY_JSON_FILENAME
+    report_md_path = output_dir / REPORT_MD_FILENAME
+
+    write_summary_json(summary, summary_json_path)
+    write_markdown_report(report_content, report_md_path)
+
+    return summary_json_path, report_md_path
+
+
+def main() -> None:
+    summary_json_path, report_md_path = generate_experiment_report()
 
     print("实验报告生成完成")
     print("-" * 50)
-    print(f"JSON 摘要：{SUMMARY_JSON_PATH}")
-    print(f"Markdown 报告：{REPORT_MD_PATH}")
+    print(f"JSON 摘要：{summary_json_path}")
+    print(f"Markdown 报告：{report_md_path}")
 
 
 if __name__ == "__main__":
