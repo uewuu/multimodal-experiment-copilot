@@ -1,3 +1,4 @@
+from pathlib import Path
 from pprint import pprint
 
 from read_config import CONFIG_PATH, read_config
@@ -8,10 +9,13 @@ from read_history import (
 )
 
 
-def build_experiment_summary() -> dict:
-    """读取配置和训练历史，生成结构化实验摘要。"""
-    config = read_config(CONFIG_PATH)
-    history = read_history(HISTORY_PATH)
+def build_experiment_summary(
+    config_path: Path = CONFIG_PATH,
+    history_path: Path = HISTORY_PATH,
+) -> dict:
+    """读取指定配置和训练历史文件，生成结构化实验摘要。"""
+    config = read_config(config_path)
+    history = read_history(history_path)
 
     r2_summary = analyze_validation_metric(history, "r2")
     racc_summary = analyze_validation_metric(history, "racc")
