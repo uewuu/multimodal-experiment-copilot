@@ -1,5 +1,6 @@
-from pathlib import Path
+import argparse
 import json
+from pathlib import Path
 
 from read_config import CONFIG_PATH
 from read_history import HISTORY_PATH
@@ -7,6 +8,8 @@ from summarize_experiment import build_experiment_summary
 
 
 OUTPUT_DIR = Path("outputs")
+DEFAULT_EXPERIMENT_DIR = CONFIG_PATH.parent
+
 SUMMARY_JSON_FILENAME = "experiment_summary.json"
 REPORT_MD_FILENAME = "experiment_report.md"
 
@@ -35,7 +38,6 @@ def build_markdown_report(summary: dict) -> str:
     feature_list = configuration.get("feature_list") or []
     feature_text = "、".join(map(str, feature_list))
 
-    # 先取得较长的配置字段，避免在 f-string 中跨行调用函数。
     use_mtf = configuration.get("use_modality_token_fusion")
     use_behavior_token = configuration.get("use_behavior_state_token")
     use_behavior_cl = configuration.get("use_behavior_aware_cl")
@@ -166,13 +168,81 @@ def generate_experiment_report(
     return summary_json_path, report_md_path
 
 
-def main() -> None:
-    summary_json_path, report_md_path = generate_experiment_report()
+def parse_arguments() -> argparse.Namespace:
+    """读取并解析命令行参数。"""
+    parser = argparse.ArgumentParser(
+        description=(
+            "读取实验目录中的 hparams.yaml 和 history.json，"
+            "生成 JSON 摘要与 Markdown 报告。"
+        )
+    )
 
+    parser.add_argument(
+        "--experiment-dir",
+        type=Path,
+        default=DEFAULT_EXPERIMENT_DIR,
+        help=(
+            "包含 hparams.yaml 和 history.json 的实验目录。"
+            f"默认值：{DEFAULT_EXPERIMENT_DIR}"
+        ),
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_DIR,
+        help=(
+            "实验摘要和 Markdown 报告的输出目录。"
+            f"默认值：{OUTPUT_DIR}"
+        ),
+    )
+
+    return parser.parse_args()
+
+
+def resolve_experiment_paths(
+    experiment_dir: Path,
+) -> tuple[Path, Path]:
+    """根据实验目录确定配置文件和训练历史文件路径。"""
+    config_path = experiment_dir / CONFIG_PATH.name
+    history_path = experiment_dir / HISTORY_PATH.name
+
+    missing_paths = [
+        path
+        for path in (config_path, history_path)
+        if not path.is_file()
+    ]
+
+    if missing_paths:
+        missing_text = "、".join(str(path) for path in missing_paths)
+        raise FileNotFoundError(
+            f"实验目录缺少必要文件：{missing_text}"
+        )
+
+    return config_path, history_path
+
+
+def main() -> None:
+    args = parse_arguments()
+
+    try:
+        config_path, history_path = resolve_experiment_paths(
+            args.experiment_dir
+        )
+
+        summary_json_path, report_md_path = generate_experiment_report(
+            config_path=config_path,
+            history_path=history_path,
+            output_dir=args.output_dir,
+        )
+    except FileNotFoundError as error:
+        raise SystemExit(f"报告生成失败：{error}") from error
+   
     print("实验报告生成完成")
     print("-" * 50)
+    print(f"实验目录：{args.experiment_dir}")
     print(f"JSON 摘要：{summary_json_path}")
-    print(f"Markdown 报告：{report_md_path}")
+    print(f"Markdown 报告：{report_md_path}")  
 
 
 if __name__ == "__main__":
