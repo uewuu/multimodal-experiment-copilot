@@ -2,6 +2,7 @@ from pathlib import Path
 
 from read_config import CONFIG_PATH
 from read_history import HISTORY_PATH
+from summarize_experiment import build_experiment_summary
 
 
 DEFAULT_EXPERIMENT_ROOT = Path("examples")
@@ -35,6 +36,47 @@ def find_experiment_dirs(root_dir: Path) -> list[Path]:
             experiment_dirs.append(candidate_dir)
 
     return sorted(experiment_dirs)
+
+
+def analyze_experiment_dirs(
+    experiment_dirs: list[Path],
+) -> dict:
+    """按传入顺序分析实验目录并收集成功与失败结果。"""
+    successful_experiments: list[dict] = []
+    failed_experiments: list[dict] = []
+
+    for experiment_dir in experiment_dirs:
+        config_path = experiment_dir / CONFIG_FILENAME
+        history_path = experiment_dir / HISTORY_FILENAME
+
+        try:
+            summary = build_experiment_summary(
+                config_path=config_path,
+                history_path=history_path,
+            )
+        except Exception as error:
+            failed_experiments.append(
+                {
+                    "experiment_name": experiment_dir.name,
+                    "experiment_dir": str(experiment_dir),
+                    "error_type": type(error).__name__,
+                    "error_message": str(error),
+                }
+            )
+            continue
+
+        successful_experiments.append(
+            {
+                "experiment_name": experiment_dir.name,
+                "experiment_dir": str(experiment_dir),
+                "summary": summary,
+            }
+        )
+
+    return {
+        "successful_experiments": successful_experiments,
+        "failed_experiments": failed_experiments,
+    }
 
 
 def main() -> None:
