@@ -8,6 +8,7 @@ from compare_experiments import (
     analyze_experiment_dirs,
     build_comparison_records,
     find_experiment_dirs,
+    rank_comparison_records,
 )
 
 
@@ -438,3 +439,95 @@ def test_build_comparison_records_does_not_modify_batch_result() -> None:
     build_comparison_records(batch_result)
 
     assert batch_result == original_batch_result
+
+
+def test_rank_comparison_records_returns_empty_list_for_empty_input() -> None:
+    assert rank_comparison_records([]) == []
+
+
+def test_rank_comparison_records_defaults_to_best_r2_descending() -> None:
+    records = [
+        {"experiment_name": "lower", "best_r2": 0.4},
+        {"experiment_name": "higher", "best_r2": 0.8},
+    ]
+
+    ranked = rank_comparison_records(records)
+
+    assert [record["experiment_name"] for record in ranked] == [
+        "higher",
+        "lower",
+    ]
+
+
+def test_rank_comparison_records_sorts_by_best_racc_descending() -> None:
+    records = [
+        {"experiment_name": "lower", "best_racc": 0.88},
+        {"experiment_name": "higher", "best_racc": 0.95},
+    ]
+
+    ranked = rank_comparison_records(records, sort_by="best_racc")
+
+    assert [record["experiment_name"] for record in ranked] == [
+        "higher",
+        "lower",
+    ]
+
+
+def test_rank_comparison_records_sorts_ascending_when_requested() -> None:
+    records = [
+        {"experiment_name": "higher", "best_r2": 0.8},
+        {"experiment_name": "lower", "best_r2": 0.4},
+    ]
+
+    ranked = rank_comparison_records(records, descending=False)
+
+    assert [record["experiment_name"] for record in ranked] == [
+        "lower",
+        "higher",
+    ]
+
+
+def test_rank_comparison_records_preserves_order_for_equal_values() -> None:
+    records = [
+        {"experiment_name": "experiment_b", "best_r2": 0.7},
+        {"experiment_name": "experiment_a", "best_r2": 0.7},
+    ]
+
+    ranked = rank_comparison_records(records)
+
+    assert [record["experiment_name"] for record in ranked] == [
+        "experiment_b",
+        "experiment_a",
+    ]
+
+
+def test_rank_comparison_records_does_not_modify_original_list() -> None:
+    records = [
+        {"experiment_name": "lower", "best_r2": 0.4},
+        {"experiment_name": "higher", "best_r2": 0.8},
+    ]
+    original_records = deepcopy(records)
+
+    ranked = rank_comparison_records(records)
+
+    assert records == original_records
+    assert ranked is not records
+
+
+def test_rank_comparison_records_rejects_unsupported_sort_field() -> None:
+    invalid_field = "best_loss"
+
+    with pytest.raises(ValueError) as error_info:
+        rank_comparison_records([], sort_by=invalid_field)
+
+    error_message = str(error_info.value)
+    assert invalid_field in error_message
+    assert "best_r2" in error_message
+    assert "best_racc" in error_message
+
+
+def test_rank_comparison_records_raises_key_error_for_missing_field() -> None:
+    records = [{"experiment_name": "experiment_a", "best_r2": 0.7}]
+
+    with pytest.raises(KeyError):
+        rank_comparison_records(records, sort_by="best_racc")

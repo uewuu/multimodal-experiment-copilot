@@ -10,6 +10,11 @@ DEFAULT_EXPERIMENT_ROOT = Path("examples")
 CONFIG_FILENAME = CONFIG_PATH.name
 HISTORY_FILENAME = HISTORY_PATH.name
 
+SORTABLE_COMPARISON_FIELDS = {
+    "best_r2",
+    "best_racc",
+}
+
 
 def find_experiment_dirs(root_dir: Path) -> list[Path]:
     """查找根目录下所有有效的实验子目录。"""
@@ -99,6 +104,26 @@ def build_comparison_records(
         )
 
     return comparison_records
+
+
+def rank_comparison_records(
+    comparison_records: list[dict],
+    sort_by: str = "best_r2",
+    descending: bool = True,
+) -> list[dict]:
+    """按指定指标对实验对比记录进行稳定排序。"""
+    if sort_by not in SORTABLE_COMPARISON_FIELDS:
+        available_fields = ", ".join(sorted(SORTABLE_COMPARISON_FIELDS))
+        raise ValueError(
+            f"不支持的排序字段：{sort_by}；"
+            f"可用字段：{available_fields}"
+        )
+
+    return sorted(
+        comparison_records,
+        key=lambda record: record[sort_by],
+        reverse=descending,
+    )
 
 
 def main() -> None:
