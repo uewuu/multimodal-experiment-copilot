@@ -48,6 +48,7 @@ AI Agent, LLM application, RAG, and AI backend engineering roles.
 - Build normalized comparison records.
 - Sort comparison results by best R² or best RACC.
 - Export UTF-8 JSON comparison results.
+- Generate a human-readable multi-experiment Markdown report.
 - Provide a configurable multi-experiment comparison CLI.
 - Cover the comparison workflow with automated pytest tests.
 
@@ -62,6 +63,8 @@ multimodal-experiment-copilot/
 ├── notes/
 │   └── day01.md
 ├── outputs/
+│   ├── comparison.json
+│   └── comparison.md
 ├── tests/
 │   └── test_compare_experiments.py
 ├── .gitignore
@@ -166,6 +169,7 @@ python compare_experiments.py
 
 - 实验根目录：`examples`
 - JSON 输出：`outputs/comparison.json`
+- Markdown 输出：`outputs/comparison.md`
 - 排序字段：`best_r2`
 - 排序方向：降序
 
@@ -176,7 +180,8 @@ PowerShell：
 ```powershell
 python compare_experiments.py `
   --experiment-root examples `
-  --output-path outputs/comparison.json `
+  --output-path outputs/custom_comparison.json `
+  --markdown-output-path outputs/custom_comparison.md `
   --sort-by best_racc `
   --ascending
 ```
@@ -185,6 +190,7 @@ python compare_experiments.py `
 
 - `--experiment-root`：包含多个实验目录的根目录。
 - `--output-path`：JSON 输出文件路径。
+- `--markdown-output-path`：Markdown 对比报告输出路径。
 - `--sort-by`：排序字段，可选 `best_r2` 或 `best_racc`。
 - `--ascending`：出现时使用升序；未出现时使用降序。
 
@@ -220,6 +226,17 @@ python compare_experiments.py `
 }
 ```
 
+### Markdown 报告内容
+
+多实验 Markdown 报告是 JSON 对比结果的人类可读版本，至少包含：
+
+- `Overview`；
+- 排序字段和排序方向；
+- 实验总数、成功数和失败数；
+- `Ranked Experiments` 排名表格；
+- 每个成功实验的 Best R²、对应 epoch、Best RACC 和对应 epoch；
+- 存在失败实验时的 `Failed Experiments` 章节。
+
 ### 错误隔离行为
 
 - 单个实验分析失败时不会中断其他实验。
@@ -232,7 +249,7 @@ python compare_experiments.py `
 python -m pytest .\tests -v
 ```
 
-当前版本的本地验证记录为 64 个测试通过。
+当前版本已使用上述命令完成本地测试验证。
 
 ## Generated Outputs
 
@@ -258,6 +275,7 @@ By default, `compare_experiments.py` generates:
 
 ```text
 outputs/comparison.json
+outputs/comparison.md
 ```
 
 The comparison JSON contains:
@@ -266,6 +284,12 @@ The comparison JSON contains:
 2. Total, successful, and failed experiment counts.
 3. Sorted experiment metric records.
 4. Failed experiments and their error details.
+
+The human-readable Markdown report contains:
+
+1. An overview of sorting and experiment counts.
+2. A ranked experiment table with best R² and RACC values and epochs.
+3. A failed-experiment table when failures are present.
 
 ## Example Analysis
 
@@ -308,6 +332,8 @@ The project has been developed through small, verifiable Git commits:
 15. Add the multi-experiment comparison CLI.
 16. Add automated tests for the comparison workflow.
 17. Document multi-experiment comparison usage.
+18. Build and write the multi-experiment Markdown comparison report.
+19. Integrate Markdown output into the comparison pipeline and CLI.
 
 The complete evolution is available in the repository commit history.
 
@@ -323,7 +349,8 @@ The complete evolution is available in the repository commit history.
 - [x] Configurable input and output paths
 - [x] Command-line interface
 - [x] Multi-experiment batch analysis
-- [ ] Experiment comparison tables
+- [x] Experiment comparison tables
+- [x] Multi-experiment Markdown comparison report
 - [ ] Trait-wise metric summaries
 - [ ] Configuration and schema validation
 - [x] Automated tests with `pytest`

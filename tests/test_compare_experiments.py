@@ -5,14 +5,17 @@ import pytest
 
 import compare_experiments
 from compare_experiments import (
+    DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH,
     DEFAULT_COMPARISON_OUTPUT_PATH,
     analyze_experiment_dirs,
+    build_comparison_markdown,
     build_comparison_payload,
     build_comparison_records,
     find_experiment_dirs,
     parse_args,
     rank_comparison_records,
     run_comparison_pipeline,
+    write_comparison_markdown,
     write_comparison_json,
 )
 
@@ -971,13 +974,290 @@ def test_run_comparison_pipeline_propagates_value_error_without_writing(
     assert write_called is False
 
 
+def test_run_comparison_pipeline_skips_markdown_when_path_is_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    payload = {"comparison_records": []}
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        lambda result, **kwargs: payload,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda result, path: calls.append("write_json"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_markdown",
+        lambda result: calls.append("build_markdown"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_markdown",
+        lambda text, path: calls.append("write_markdown"),
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=None,
+    )
+
+    assert calls == ["write_json"]
+
+
+def test_run_comparison_pipeline_builds_markdown_when_path_is_provided(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"comparison_records": []}
+    received_payloads: list[dict] = []
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        lambda result, **kwargs: payload,
+    )
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_markdown",
+        lambda result: received_payloads.append(result) or "# Report\n",
+    )
+    monkeypatch.setattr(compare_experiments, "write_comparison_markdown", lambda text, path: path)
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=tmp_path / "comparison.md",
+    )
+
+    assert received_payloads == [payload]
+
+
+def test_run_comparison_pipeline_writes_markdown_to_requested_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    markdown_output_path = tmp_path / "reports" / "comparison.md"
+    received: dict[str, object] = {}
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", lambda payload: "# Report\n")
+
+    def fake_write_markdown(text: str, path: Path) -> Path:
+        received["text"] = text
+        received["path"] = path
+        return path
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_markdown",
+        fake_write_markdown,
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=markdown_output_path,
+    )
+
+    assert received == {"text": "# Report\n", "path": markdown_output_path}
+
+
+def test_run_comparison_pipeline_calls_markdown_after_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def record(name: str, result: object) -> object:
+        calls.append(name)
+        return result
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        lambda root: record("find", []),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "analyze_experiment_dirs",
+        lambda dirs: record("analyze", {}),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        lambda result, **kwargs: record("build_payload", {}),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda payload, path: record("write_json", path),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_markdown",
+        lambda payload: record("build_markdown", "# Report\n"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_markdown",
+        lambda text, path: record("write_markdown", path),
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=tmp_path / "comparison.md",
+    )
+
+    assert calls == [
+        "find",
+        "analyze",
+        "build_payload",
+        "write_json",
+        "build_markdown",
+        "write_markdown",
+    ]
+
+
+def test_run_comparison_pipeline_returns_payload_with_markdown_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"comparison_records": []}
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: payload)
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", lambda result: "# Report\n")
+    monkeypatch.setattr(compare_experiments, "write_comparison_markdown", lambda text, path: path)
+
+    result = run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=tmp_path / "comparison.md",
+    )
+
+    assert result is payload
+
+
+def test_run_comparison_pipeline_propagates_markdown_build_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    markdown_write_called = False
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+
+    def raise_build_error(payload: dict) -> str:
+        raise ValueError("Markdown build failed")
+
+    def fake_write_markdown(text: str, path: Path) -> Path:
+        nonlocal markdown_write_called
+        markdown_write_called = True
+        return path
+
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", raise_build_error)
+    monkeypatch.setattr(compare_experiments, "write_comparison_markdown", fake_write_markdown)
+
+    with pytest.raises(ValueError, match="Markdown build failed"):
+        run_comparison_pipeline(
+            tmp_path,
+            tmp_path / "comparison.json",
+            markdown_output_path=tmp_path / "comparison.md",
+        )
+
+    assert markdown_write_called is False
+
+
+def test_run_comparison_pipeline_propagates_markdown_write_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", lambda result: "# Report\n")
+
+    def raise_write_error(text: str, path: Path) -> Path:
+        raise OSError("Markdown write failed")
+
+    monkeypatch.setattr(compare_experiments, "write_comparison_markdown", raise_write_error)
+
+    with pytest.raises(OSError, match="Markdown write failed"):
+        run_comparison_pipeline(
+            tmp_path,
+            tmp_path / "comparison.json",
+            markdown_output_path=tmp_path / "comparison.md",
+        )
+
+
+def test_run_comparison_pipeline_writes_json_before_markdown_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda result, path: calls.append("write_json"),
+    )
+
+    def raise_build_error(payload: dict) -> str:
+        calls.append("build_markdown")
+        raise ValueError("Markdown build failed")
+
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", raise_build_error)
+
+    with pytest.raises(ValueError, match="Markdown build failed"):
+        run_comparison_pipeline(
+            tmp_path,
+            tmp_path / "comparison.json",
+            markdown_output_path=tmp_path / "comparison.md",
+        )
+
+    assert calls == ["write_json", "build_markdown"]
+
+
 def test_parse_args_uses_default_values() -> None:
     args = parse_args([])
 
     assert args.experiment_root == compare_experiments.DEFAULT_EXPERIMENT_ROOT
     assert args.output_path == DEFAULT_COMPARISON_OUTPUT_PATH
+    assert args.markdown_output_path == DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH
     assert args.sort_by == "best_r2"
     assert args.ascending is False
+
+
+def test_parse_args_uses_default_markdown_output_path() -> None:
+    args = parse_args([])
+
+    assert args.markdown_output_path == DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH
+
+
+def test_parse_args_accepts_custom_markdown_output_path() -> None:
+    args = parse_args(
+        ["--markdown-output-path", "custom/report.md"]
+    )
+
+    assert args.markdown_output_path == Path("custom/report.md")
 
 
 def test_parse_args_accepts_custom_paths() -> None:
@@ -1044,6 +1324,8 @@ def test_main_passes_parsed_arguments_to_pipeline(
             "custom_experiments",
             "--output-path",
             "custom_outputs/comparison.json",
+            "--markdown-output-path",
+            "custom_outputs/comparison.md",
             "--sort-by",
             "best_racc",
             "--ascending",
@@ -1055,7 +1337,40 @@ def test_main_passes_parsed_arguments_to_pipeline(
         "output_path": Path("custom_outputs/comparison.json"),
         "sort_by": "best_racc",
         "descending": False,
+        "markdown_output_path": Path("custom_outputs/comparison.md"),
     }
+
+
+def test_main_passes_markdown_output_path_to_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, object] = {}
+
+    def fake_pipeline(**kwargs: object) -> dict:
+        received.update(kwargs)
+        return {
+            "sort_by": "best_r2",
+            "descending": True,
+            "experiment_counts": {
+                "total": 0,
+                "successful": 0,
+                "failed": 0,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        }
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fake_pipeline,
+    )
+
+    compare_experiments.main(
+        ["--markdown-output-path", "custom/report.md"]
+    )
+
+    assert received["markdown_output_path"] == Path("custom/report.md")
 
 
 def test_main_prints_comparison_summary(
@@ -1090,6 +1405,363 @@ def test_main_prints_comparison_summary(
     assert "JSON 输出" in captured.out
 
 
+def test_main_prints_markdown_output_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        lambda **kwargs: {
+            "sort_by": "best_r2",
+            "descending": True,
+            "experiment_counts": {
+                "total": 1,
+                "successful": 1,
+                "failed": 0,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        },
+    )
+
+    compare_experiments.main(
+        ["--markdown-output-path", "custom/report.md"]
+    )
+
+    captured = capsys.readouterr()
+    assert "Markdown 输出" in captured.out
+    assert str(Path("custom/report.md")) in captured.out
+
+
+def test_main_reports_both_output_paths_when_no_experiments_are_found(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        lambda **kwargs: {
+            "sort_by": "best_r2",
+            "descending": True,
+            "experiment_counts": {
+                "total": 0,
+                "successful": 0,
+                "failed": 0,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        },
+    )
+
+    compare_experiments.main(
+        [
+            "--output-path",
+            "custom/comparison.json",
+            "--markdown-output-path",
+            "custom/comparison.md",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "JSON 输出" in captured.out
+    assert str(Path("custom/comparison.json")) in captured.out
+    assert "Markdown 输出" in captured.out
+    assert str(Path("custom/comparison.md")) in captured.out
+
+
+def markdown_payload() -> dict:
+    return {
+        "sort_by": "best_r2",
+        "descending": True,
+        "experiment_counts": {"total": 0, "successful": 0, "failed": 0},
+        "comparison_records": [],
+        "failed_experiments": [],
+    }
+
+
+def comparison_record(name: str, value: float = 0.5) -> dict:
+    return {
+        "experiment_name": name,
+        "experiment_dir": f"examples/{name}",
+        "best_r2": value,
+        "best_r2_epoch": 2,
+        "best_racc": value,
+        "best_racc_epoch": 3,
+    }
+
+
+def test_build_comparison_markdown_starts_with_document_title() -> None:
+    markdown_text = build_comparison_markdown(markdown_payload())
+
+    assert markdown_text.startswith(
+        "# Multi-experiment Comparison Report\n\n"
+    )
+
+
+def test_build_comparison_markdown_includes_ranked_table_header() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [comparison_record("experiment_a")]
+    markdown_text = build_comparison_markdown(payload)
+    table_header = (
+        "| Rank | Experiment | Directory | Best R² | R² Epoch | "
+        "Best RACC | RACC Epoch |"
+    )
+    separator = "| ---: | --- | --- | ---: | ---: | ---: | ---: |"
+
+    assert table_header in markdown_text
+    assert markdown_text.index(table_header) < markdown_text.index(separator)
+
+
+def test_build_comparison_markdown_handles_no_successful_experiments() -> None:
+    markdown = build_comparison_markdown(markdown_payload())
+
+    assert "No successful experiments were analyzed." in markdown
+
+
+def test_build_comparison_markdown_builds_ranked_table_for_one_experiment() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [comparison_record("experiment_a", 0.9)]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "| Rank | Experiment | Directory | Best R² |" in markdown
+    assert "| 1 | experiment_a | examples/experiment_a |" in markdown
+
+
+def test_build_comparison_markdown_preserves_record_order() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [
+        comparison_record("second", 0.2),
+        comparison_record("first", 0.9),
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert markdown.index("second") < markdown.index("first")
+
+
+def test_build_comparison_markdown_numbers_ranks_from_one() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [
+        comparison_record("a"),
+        comparison_record("b"),
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "| 1 | a |" in markdown
+    assert "| 2 | b |" in markdown
+
+
+def test_build_comparison_markdown_formats_metrics_to_six_decimals() -> None:
+    payload = markdown_payload()
+    record = comparison_record("a")
+    record["best_r2"] = 0.123456789
+    record["best_racc"] = 0.9
+    payload["comparison_records"] = [record]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "0.123457" in markdown
+    assert "0.900000" in markdown
+
+
+def test_build_comparison_markdown_displays_descending_direction() -> None:
+    markdown = build_comparison_markdown(markdown_payload())
+
+    assert "- Sort direction: Descending" in markdown
+
+
+def test_build_comparison_markdown_displays_ascending_direction() -> None:
+    payload = markdown_payload()
+    payload["descending"] = False
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "- Sort direction: Ascending" in markdown
+
+
+def test_build_comparison_markdown_omits_failed_section_when_no_failures() -> None:
+    markdown = build_comparison_markdown(markdown_payload())
+
+    assert "## Failed Experiments" not in markdown
+
+
+def test_build_comparison_markdown_includes_failed_experiment_table() -> None:
+    payload = markdown_payload()
+    payload["failed_experiments"] = [
+        {
+            "experiment_name": "broken",
+            "experiment_dir": "examples/broken",
+            "error_type": "ValueError",
+            "error_message": "invalid metric",
+        }
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "## Failed Experiments" in markdown
+    assert "| broken | examples/broken | ValueError | invalid metric |" in markdown
+
+
+def test_build_comparison_markdown_escapes_table_pipes() -> None:
+    payload = markdown_payload()
+    payload["failed_experiments"] = [
+        {
+            "experiment_name": "a|b",
+            "experiment_dir": "dir|name",
+            "error_type": "Type|Error",
+            "error_message": "left|right",
+        }
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    for escaped_value in ["a\\|b", "dir\\|name", "Type\\|Error", "left\\|right"]:
+        assert escaped_value in markdown
+
+
+def test_build_comparison_markdown_replaces_multiline_cells_with_html_breaks() -> None:
+    payload = markdown_payload()
+    payload["failed_experiments"] = [
+        {
+            "experiment_name": "broken",
+            "experiment_dir": "line1\r\nline2",
+            "error_type": "ValueError",
+            "error_message": "first\rsecond\nthird",
+        }
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "line1<br>line2" in markdown
+    assert "first<br>second<br>third" in markdown
+
+
+def test_build_comparison_markdown_does_not_modify_payload() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [comparison_record("a")]
+    original_payload = deepcopy(payload)
+
+    build_comparison_markdown(payload)
+
+    assert payload == original_payload
+
+
+def test_build_comparison_markdown_raises_key_error_for_missing_required_key() -> None:
+    payload = markdown_payload()
+    del payload["sort_by"]
+
+    with pytest.raises(KeyError, match="sort_by"):
+        build_comparison_markdown(payload)
+
+
+def test_write_comparison_markdown_writes_content(tmp_path: Path) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_returns_output_path(tmp_path: Path) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    result = write_comparison_markdown("# Report", output_path)
+
+    assert result == output_path
+
+
+def test_write_comparison_markdown_preserves_chinese_utf8(tmp_path: Path) -> None:
+    output_path = tmp_path / "comparison.md"
+    markdown_text = "# 多实验对比报告\n\n测试成功"
+
+    write_comparison_markdown(markdown_text, output_path)
+
+    assert output_path.read_text(encoding="utf-8") == (
+        "# 多实验对比报告\n\n测试成功\n"
+    )
+
+
+def test_write_comparison_markdown_creates_nested_parent_directories(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "nested" / "reports" / "comparison.md"
+
+    write_comparison_markdown("# Report", output_path)
+
+    assert output_path.parent.is_dir()
+    assert output_path.is_file()
+
+
+def test_write_comparison_markdown_adds_trailing_newline_when_missing(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_preserves_single_trailing_newline(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report\n", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_normalizes_multiple_trailing_newlines(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report\n\n\n", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_normalizes_mixed_trailing_newlines(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report\n\r\n\r", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_does_not_modify_input_text(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+    markdown_text = "# Report\n\n\n"
+    original_text = markdown_text
+
+    write_comparison_markdown(markdown_text, output_path)
+
+    assert markdown_text == original_text
+
+
+def test_write_comparison_markdown_propagates_os_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    def raise_os_error(*args: object, **kwargs: object) -> object:
+        raise OSError("write failed")
+
+    monkeypatch.setattr(Path, "open", raise_os_error)
+
+    with pytest.raises(OSError, match="write failed"):
+        write_comparison_markdown("# Report", output_path)
+
+
 def test_parse_args_help_describes_experiment_root(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1121,3 +1793,15 @@ def test_parse_args_help_describes_experiment_root(
     assert help_lines[output_option_index + 1].strip() == (
         "实验对比结果的 JSON 输出路径"
     )
+
+
+def test_parse_args_help_describes_markdown_output_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error_info:
+        parse_args(["--help"])
+
+    captured = capsys.readouterr()
+    assert error_info.value.code == 0
+    assert "--markdown-output-path" in captured.out
+    assert "Markdown 对比报告输出路径" in captured.out

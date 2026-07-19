@@ -11,6 +11,9 @@ DEFAULT_EXPERIMENT_ROOT = Path("examples")
 DEFAULT_COMPARISON_OUTPUT_PATH = Path(
     "outputs/comparison.json"
 )
+DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH = Path(
+    "outputs/comparison.md"
+)
 
 CONFIG_FILENAME = CONFIG_PATH.name
 HISTORY_FILENAME = HISTORY_PATH.name
@@ -165,6 +168,97 @@ def build_comparison_payload(
     }
 
 
+def _escape_markdown_cell(value: object) -> str:
+    """Escape a value for safe use in a Markdown table cell."""
+    text = str(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.replace("\n", "<br>").replace("|", "\\|")
+
+
+def build_comparison_markdown(payload: dict) -> str:
+    """Build a Markdown report from a multi-experiment payload."""
+    counts = payload["experiment_counts"]
+    comparison_records = payload["comparison_records"]
+    failed_experiments = payload["failed_experiments"]
+    sort_direction = (
+        "Descending" if payload["descending"] else "Ascending"
+    )
+
+    report_lines = [
+        "# Multi-experiment Comparison Report",
+        "",
+        "## Overview",
+        "",
+        f'- Sort field: `{payload["sort_by"]}`',
+        f"- Sort direction: {sort_direction}",
+        f'- Total experiments: {counts["total"]}',
+        f'- Successful experiments: {counts["successful"]}',
+        f'- Failed experiments: {counts["failed"]}',
+        "",
+        "## Ranked Experiments",
+        "",
+    ]
+
+    if comparison_records:
+        report_lines.extend(
+            [
+                "| Rank | Experiment | Directory | Best R² | R² Epoch | Best RACC | RACC Epoch |",
+                "| ---: | --- | --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for rank, record in enumerate(comparison_records, start=1):
+            report_lines.append(
+                "| "
+                f'{rank} | {_escape_markdown_cell(record["experiment_name"])} | '
+                f'{_escape_markdown_cell(record["experiment_dir"])} | '
+                f'{record["best_r2"]:.6f} | {record["best_r2_epoch"]} | '
+                f'{record["best_racc"]:.6f} | {record["best_racc_epoch"]} |'
+            )
+    else:
+        report_lines.append("No successful experiments were analyzed.")
+
+    if failed_experiments:
+        report_lines.extend(
+            [
+                "",
+                "## Failed Experiments",
+                "",
+                "| Experiment | Directory | Error Type | Error Message |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
+        for experiment in failed_experiments:
+            report_lines.append(
+                "| "
+                f'{_escape_markdown_cell(experiment["experiment_name"])} | '
+                f'{_escape_markdown_cell(experiment["experiment_dir"])} | '
+                f'{_escape_markdown_cell(experiment["error_type"])} | '
+                f'{_escape_markdown_cell(experiment["error_message"])} |'
+            )
+
+    return "\n".join(report_lines) + "\n"
+
+
+def write_comparison_markdown(
+    markdown_text: str,
+    output_path: Path,
+) -> Path:
+    """将 Markdown 对比报告以 UTF-8 写入指定路径。"""
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    normalized_text = markdown_text.rstrip("\r\n") + "\n"
+
+    with output_path.open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+        file.write(normalized_text)
+
+    return output_path
+
+
 def write_comparison_json(
     payload: dict,
     output_path: Path,
@@ -195,8 +289,9 @@ def run_comparison_pipeline(
     output_path: Path,
     sort_by: str = "best_r2",
     descending: bool = True,
+    markdown_output_path: Path | None = None,
 ) -> dict:
-    """执行实验发现、分析、载荷构建和 JSON 写入流程。"""
+    """总是写入 JSON，可选写入 Markdown，并返回实验对比载荷。"""
     experiment_dirs = find_experiment_dirs(
         experiment_root
     )
@@ -212,6 +307,13 @@ def run_comparison_pipeline(
         payload,
         output_path,
     )
+
+    if markdown_output_path is not None:
+        markdown_text = build_comparison_markdown(payload)
+        write_comparison_markdown(
+            markdown_text,
+            markdown_output_path,
+        )
 
     return payload
 
@@ -234,6 +336,12 @@ def parse_args(
         type=Path,
         default=DEFAULT_COMPARISON_OUTPUT_PATH,
         help="实验对比结果的 JSON 输出路径",
+    )
+    parser.add_argument(
+        "--markdown-output-path",
+        type=Path,
+        default=DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH,
+        help="Markdown 对比报告输出路径",
     )
     parser.add_argument(
         "--sort-by",
@@ -261,6 +369,7 @@ def main(
             output_path=args.output_path,
             sort_by=args.sort_by,
             descending=not args.ascending,
+            markdown_output_path=args.markdown_output_path,
         )
     except (FileNotFoundError, NotADirectoryError) as error:
         raise SystemExit(
@@ -272,6 +381,7 @@ def main(
     if counts["total"] == 0:
         print(f"没有找到有效实验目录：{args.experiment_root}")
         print(f"- JSON 输出：{args.output_path}")
+        print(f"- Markdown 输出：{args.markdown_output_path}")
         return
 
     sort_direction = "降序" if payload["descending"] else "升序"
@@ -281,6 +391,7 @@ def main(
     print(f"- 失败实验：{counts['failed']}")
     print(f"- 排序方式：{payload['sort_by']}（{sort_direction}）")
     print(f"- JSON 输出：{args.output_path}")
+    print(f"- Markdown 输出：{args.markdown_output_path}")
 
 
 if __name__ == "__main__":
