@@ -126,6 +126,40 @@ def rank_comparison_records(
     )
 
 
+def build_comparison_payload(
+    batch_result: dict,
+    sort_by: str = "best_r2",
+    descending: bool = True,
+) -> dict:
+    """构建包含排序记录、实验数量和失败信息的对比载荷。"""
+    comparison_records = build_comparison_records(batch_result)
+    ranked_records = rank_comparison_records(
+        comparison_records,
+        sort_by=sort_by,
+        descending=descending,
+    )
+
+    successful_count = len(
+        batch_result["successful_experiments"]
+    )
+    failed_count = len(
+        batch_result["failed_experiments"]
+    )
+    total_count = successful_count + failed_count
+
+    return {
+        "sort_by": sort_by,
+        "descending": descending,
+        "experiment_counts": {
+            "total": total_count,
+            "successful": successful_count,
+            "failed": failed_count,
+        },
+        "comparison_records": ranked_records,
+        "failed_experiments": batch_result["failed_experiments"],
+    }
+
+
 def main() -> None:
     try:
         experiment_dirs = find_experiment_dirs(

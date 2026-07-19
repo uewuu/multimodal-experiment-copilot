@@ -6,6 +6,7 @@ import pytest
 import compare_experiments
 from compare_experiments import (
     analyze_experiment_dirs,
+    build_comparison_payload,
     build_comparison_records,
     find_experiment_dirs,
     rank_comparison_records,
@@ -531,3 +532,156 @@ def test_rank_comparison_records_raises_key_error_for_missing_field() -> None:
 
     with pytest.raises(KeyError):
         rank_comparison_records(records, sort_by="best_racc")
+
+
+def make_successful_experiment(
+    name: str,
+    best_r2: float,
+    best_racc: float,
+) -> dict:
+    return {
+        "experiment_name": name,
+        "experiment_dir": f"experiments/{name}",
+        "summary": {
+            "validation_metrics": {
+                "r2": {"best_value": best_r2, "best_epoch": 3},
+                "racc": {"best_value": best_racc, "best_epoch": 4},
+            }
+        },
+    }
+
+
+def test_build_comparison_payload_builds_empty_payload() -> None:
+    batch_result = {
+        "successful_experiments": [],
+        "failed_experiments": [],
+    }
+
+    payload = build_comparison_payload(batch_result)
+
+    assert payload["experiment_counts"] == {
+        "total": 0,
+        "successful": 0,
+        "failed": 0,
+    }
+    assert payload["comparison_records"] == []
+    assert payload["failed_experiments"] == []
+
+
+def test_build_comparison_payload_calculates_experiment_counts() -> None:
+    batch_result = {
+        "successful_experiments": [
+            make_successful_experiment("experiment_a", 0.7, 0.91),
+            make_successful_experiment("experiment_b", 0.8, 0.92),
+        ],
+        "failed_experiments": [
+            {
+                "experiment_name": "failed_experiment",
+                "error_type": "ValueError",
+            }
+        ],
+    }
+
+    payload = build_comparison_payload(batch_result)
+
+    assert payload["experiment_counts"] == {
+        "total": 3,
+        "successful": 2,
+        "failed": 1,
+    }
+
+
+def test_build_comparison_payload_defaults_to_best_r2_descending() -> None:
+    batch_result = {
+        "successful_experiments": [
+            make_successful_experiment("lower", 0.5, 0.95),
+            make_successful_experiment("higher", 0.8, 0.90),
+        ],
+        "failed_experiments": [],
+    }
+
+    payload = build_comparison_payload(batch_result)
+
+    assert payload["sort_by"] == "best_r2"
+    assert payload["descending"] is True
+    assert [
+        record["experiment_name"]
+        for record in payload["comparison_records"]
+    ] == ["higher", "lower"]
+
+
+def test_build_comparison_payload_sorts_best_racc_ascending() -> None:
+    batch_result = {
+        "successful_experiments": [
+            make_successful_experiment("higher", 0.5, 0.95),
+            make_successful_experiment("lower", 0.8, 0.90),
+        ],
+        "failed_experiments": [],
+    }
+
+    payload = build_comparison_payload(
+        batch_result,
+        sort_by="best_racc",
+        descending=False,
+    )
+
+    assert payload["sort_by"] == "best_racc"
+    assert payload["descending"] is False
+    assert [
+        record["experiment_name"]
+        for record in payload["comparison_records"]
+    ] == ["lower", "higher"]
+
+
+def test_build_comparison_payload_preserves_only_failed_experiments() -> None:
+    failed_experiments = [
+        {
+            "experiment_name": "failed_experiment",
+            "experiment_dir": "experiments/failed_experiment",
+            "error_type": "ValueError",
+            "error_message": "invalid history",
+        }
+    ]
+    batch_result = {
+        "successful_experiments": [
+            make_successful_experiment("successful", 0.7, 0.93)
+        ],
+        "failed_experiments": failed_experiments,
+    }
+
+    payload = build_comparison_payload(batch_result)
+
+    assert payload["failed_experiments"] is failed_experiments
+    assert [
+        record["experiment_name"]
+        for record in payload["comparison_records"]
+    ] == ["successful"]
+
+
+def test_build_comparison_payload_rejects_invalid_sort_field() -> None:
+    batch_result = {
+        "successful_experiments": [],
+        "failed_experiments": [],
+    }
+
+    with pytest.raises(ValueError):
+        build_comparison_payload(batch_result, sort_by="best_loss")
+
+
+def test_build_comparison_payload_does_not_modify_batch_result() -> None:
+    batch_result = {
+        "successful_experiments": [
+            make_successful_experiment("experiment_a", 0.7, 0.93)
+        ],
+        "failed_experiments": [
+            {
+                "experiment_name": "failed_experiment",
+                "error_type": "ValueError",
+            }
+        ],
+    }
+    original_batch_result = deepcopy(batch_result)
+
+    build_comparison_payload(batch_result)
+
+    assert batch_result == original_batch_result
