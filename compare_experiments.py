@@ -11,6 +11,9 @@ DEFAULT_EXPERIMENT_ROOT = Path("examples")
 DEFAULT_COMPARISON_OUTPUT_PATH = Path(
     "outputs/comparison.json"
 )
+DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH = Path(
+    "outputs/comparison.md"
+)
 
 CONFIG_FILENAME = CONFIG_PATH.name
 HISTORY_FILENAME = HISTORY_PATH.name
@@ -335,6 +338,12 @@ def parse_args(
         help="实验对比结果的 JSON 输出路径",
     )
     parser.add_argument(
+        "--markdown-output-path",
+        type=Path,
+        default=DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH,
+        help="Markdown 对比报告输出路径",
+    )
+    parser.add_argument(
         "--sort-by",
         choices=sorted(SORTABLE_COMPARISON_FIELDS),
         default="best_r2",
@@ -360,6 +369,7 @@ def main(
             output_path=args.output_path,
             sort_by=args.sort_by,
             descending=not args.ascending,
+            markdown_output_path=args.markdown_output_path,
         )
     except (FileNotFoundError, NotADirectoryError) as error:
         raise SystemExit(
@@ -371,6 +381,7 @@ def main(
     if counts["total"] == 0:
         print(f"没有找到有效实验目录：{args.experiment_root}")
         print(f"- JSON 输出：{args.output_path}")
+        print(f"- Markdown 输出：{args.markdown_output_path}")
         return
 
     sort_direction = "降序" if payload["descending"] else "升序"
@@ -380,6 +391,7 @@ def main(
     print(f"- 失败实验：{counts['failed']}")
     print(f"- 排序方式：{payload['sort_by']}（{sort_direction}）")
     print(f"- JSON 输出：{args.output_path}")
+    print(f"- Markdown 输出：{args.markdown_output_path}")
 
 
 if __name__ == "__main__":

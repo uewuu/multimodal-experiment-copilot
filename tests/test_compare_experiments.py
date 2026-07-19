@@ -5,6 +5,7 @@ import pytest
 
 import compare_experiments
 from compare_experiments import (
+    DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH,
     DEFAULT_COMPARISON_OUTPUT_PATH,
     analyze_experiment_dirs,
     build_comparison_markdown,
@@ -1240,8 +1241,23 @@ def test_parse_args_uses_default_values() -> None:
 
     assert args.experiment_root == compare_experiments.DEFAULT_EXPERIMENT_ROOT
     assert args.output_path == DEFAULT_COMPARISON_OUTPUT_PATH
+    assert args.markdown_output_path == DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH
     assert args.sort_by == "best_r2"
     assert args.ascending is False
+
+
+def test_parse_args_uses_default_markdown_output_path() -> None:
+    args = parse_args([])
+
+    assert args.markdown_output_path == DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH
+
+
+def test_parse_args_accepts_custom_markdown_output_path() -> None:
+    args = parse_args(
+        ["--markdown-output-path", "custom/report.md"]
+    )
+
+    assert args.markdown_output_path == Path("custom/report.md")
 
 
 def test_parse_args_accepts_custom_paths() -> None:
@@ -1308,6 +1324,8 @@ def test_main_passes_parsed_arguments_to_pipeline(
             "custom_experiments",
             "--output-path",
             "custom_outputs/comparison.json",
+            "--markdown-output-path",
+            "custom_outputs/comparison.md",
             "--sort-by",
             "best_racc",
             "--ascending",
@@ -1319,7 +1337,40 @@ def test_main_passes_parsed_arguments_to_pipeline(
         "output_path": Path("custom_outputs/comparison.json"),
         "sort_by": "best_racc",
         "descending": False,
+        "markdown_output_path": Path("custom_outputs/comparison.md"),
     }
+
+
+def test_main_passes_markdown_output_path_to_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, object] = {}
+
+    def fake_pipeline(**kwargs: object) -> dict:
+        received.update(kwargs)
+        return {
+            "sort_by": "best_r2",
+            "descending": True,
+            "experiment_counts": {
+                "total": 0,
+                "successful": 0,
+                "failed": 0,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        }
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fake_pipeline,
+    )
+
+    compare_experiments.main(
+        ["--markdown-output-path", "custom/report.md"]
+    )
+
+    assert received["markdown_output_path"] == Path("custom/report.md")
 
 
 def test_main_prints_comparison_summary(
@@ -1352,6 +1403,71 @@ def test_main_prints_comparison_summary(
     assert "best_r2" in captured.out
     assert "降序" in captured.out
     assert "JSON 输出" in captured.out
+
+
+def test_main_prints_markdown_output_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        lambda **kwargs: {
+            "sort_by": "best_r2",
+            "descending": True,
+            "experiment_counts": {
+                "total": 1,
+                "successful": 1,
+                "failed": 0,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        },
+    )
+
+    compare_experiments.main(
+        ["--markdown-output-path", "custom/report.md"]
+    )
+
+    captured = capsys.readouterr()
+    assert "Markdown 输出" in captured.out
+    assert str(Path("custom/report.md")) in captured.out
+
+
+def test_main_reports_both_output_paths_when_no_experiments_are_found(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        lambda **kwargs: {
+            "sort_by": "best_r2",
+            "descending": True,
+            "experiment_counts": {
+                "total": 0,
+                "successful": 0,
+                "failed": 0,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        },
+    )
+
+    compare_experiments.main(
+        [
+            "--output-path",
+            "custom/comparison.json",
+            "--markdown-output-path",
+            "custom/comparison.md",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "JSON 输出" in captured.out
+    assert str(Path("custom/comparison.json")) in captured.out
+    assert "Markdown 输出" in captured.out
+    assert str(Path("custom/comparison.md")) in captured.out
 
 
 def markdown_payload() -> dict:
@@ -1677,3 +1793,15 @@ def test_parse_args_help_describes_experiment_root(
     assert help_lines[output_option_index + 1].strip() == (
         "实验对比结果的 JSON 输出路径"
     )
+
+
+def test_parse_args_help_describes_markdown_output_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error_info:
+        parse_args(["--help"])
+
+    captured = capsys.readouterr()
+    assert error_info.value.code == 0
+    assert "--markdown-output-path" in captured.out
+    assert "Markdown 对比报告输出路径" in captured.out
