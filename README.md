@@ -51,11 +51,18 @@ AI Agent, LLM application, RAG, and AI backend engineering roles.
 - Generate a human-readable multi-experiment Markdown report.
 - Provide a configurable multi-experiment comparison CLI.
 - Cover the comparison workflow with automated pytest tests.
+- Validate the full pytest suite automatically with GitHub Actions.
+- Run CI with Python 3.11 on `ubuntu-latest`.
+- Run automatic checks for pull requests targeting `main` and pushes to
+  `main`.
 
 ## Project Structure
 
 ```text
 multimodal-experiment-copilot/
+├── .github/
+│   └── workflows/
+│       └── tests.yml
 ├── examples/
 │   └── demo_experiment/
 │       ├── history.json
@@ -73,6 +80,7 @@ multimodal-experiment-copilot/
 ├── generate_report.py
 ├── read_config.py
 ├── read_history.py
+├── requirements.txt
 └── summarize_experiment.py
 ```
 
@@ -96,6 +104,23 @@ Test dependency:
 ```bash
 pip install pytest
 ```
+
+## Continuous Integration
+
+The `Tests` GitHub Actions workflow automatically validates the project when:
+
+- a pull request targets `main`;
+- a commit is pushed to `main`.
+
+The workflow runs on `ubuntu-latest` with Python 3.11, installs dependencies
+from `requirements.txt`, and executes the complete test suite with:
+
+```bash
+python -m pytest ./tests -q
+```
+
+The GitHub-hosted workflow has been verified successfully for the current
+version, including a passing pull request check.
 
 ## Usage
 
@@ -354,6 +379,7 @@ The complete evolution is available in the repository commit history.
 - [ ] Trait-wise metric summaries
 - [ ] Configuration and schema validation
 - [x] Automated tests with `pytest`
+- [x] Automated pytest validation with GitHub Actions
 - [ ] LLM Tool Calling
 - [ ] LangGraph workflow
 - [ ] RAG support
