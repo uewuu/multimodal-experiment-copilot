@@ -79,6 +79,28 @@ def analyze_experiment_dirs(
     }
 
 
+def build_comparison_records(
+    batch_result: dict,
+) -> list[dict]:
+    """从成功实验摘要中构建统一的实验对比记录。"""
+    comparison_records: list[dict] = []
+
+    for experiment in batch_result["successful_experiments"]:
+        metrics = experiment["summary"]["validation_metrics"]
+        comparison_records.append(
+            {
+                "experiment_name": experiment["experiment_name"],
+                "experiment_dir": experiment["experiment_dir"],
+                "best_r2": metrics["r2"]["best_value"],
+                "best_r2_epoch": metrics["r2"]["best_epoch"],
+                "best_racc": metrics["racc"]["best_value"],
+                "best_racc_epoch": metrics["racc"]["best_epoch"],
+            }
+        )
+
+    return comparison_records
+
+
 def main() -> None:
     try:
         experiment_dirs = find_experiment_dirs(
