@@ -1112,6 +1112,28 @@ def comparison_record(name: str, value: float = 0.5) -> dict:
     }
 
 
+def test_build_comparison_markdown_starts_with_document_title() -> None:
+    markdown_text = build_comparison_markdown(markdown_payload())
+
+    assert markdown_text.startswith(
+        "# Multi-experiment Comparison Report\n\n"
+    )
+
+
+def test_build_comparison_markdown_includes_ranked_table_header() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [comparison_record("experiment_a")]
+    markdown_text = build_comparison_markdown(payload)
+    table_header = (
+        "| Rank | Experiment | Directory | Best R² | R² Epoch | "
+        "Best RACC | RACC Epoch |"
+    )
+    separator = "| ---: | --- | --- | ---: | ---: | ---: | ---: |"
+
+    assert table_header in markdown_text
+    assert markdown_text.index(table_header) < markdown_text.index(separator)
+
+
 def test_build_comparison_markdown_handles_no_successful_experiments() -> None:
     markdown = build_comparison_markdown(markdown_payload())
 
