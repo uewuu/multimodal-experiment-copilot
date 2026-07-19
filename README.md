@@ -115,6 +115,107 @@ hparams.yaml
 history.json
 ```
 
+## 多实验比较
+
+### 实验目录要求
+
+实验根目录的直接子目录只有同时包含以下文件时才会被识别：
+
+- `hparams.yaml`
+- `history.json`
+
+例如：
+
+```text
+examples/
+├── experiment_a/
+│   ├── hparams.yaml
+│   └── history.json
+└── experiment_b/
+    ├── hparams.yaml
+    └── history.json
+```
+
+当前只扫描实验根目录的直接子目录，不递归扫描更深层目录。
+
+### 默认运行命令
+
+```bash
+python compare_experiments.py
+```
+
+默认值：
+
+- 实验根目录：`examples`
+- JSON 输出：`outputs/comparison.json`
+- 排序字段：`best_r2`
+- 排序方向：降序
+
+### 自定义运行示例
+
+PowerShell：
+
+```powershell
+python compare_experiments.py `
+  --experiment-root examples `
+  --output-path outputs/comparison.json `
+  --sort-by best_racc `
+  --ascending
+```
+
+### 参数说明
+
+- `--experiment-root`：包含多个实验目录的根目录。
+- `--output-path`：JSON 输出文件路径。
+- `--sort-by`：排序字段，可选 `best_r2` 或 `best_racc`。
+- `--ascending`：出现时使用升序；未出现时使用降序。
+
+### JSON 输出结构
+
+```json
+{
+  "sort_by": "best_r2",
+  "descending": true,
+  "experiment_counts": {
+    "total": 2,
+    "successful": 1,
+    "failed": 1
+  },
+  "comparison_records": [
+    {
+      "experiment_name": "experiment_a",
+      "experiment_dir": "examples/experiment_a",
+      "best_r2": 0.72,
+      "best_r2_epoch": 18,
+      "best_racc": 0.94,
+      "best_racc_epoch": 20
+    }
+  ],
+  "failed_experiments": [
+    {
+      "experiment_name": "experiment_b",
+      "experiment_dir": "examples/experiment_b",
+      "error_type": "ValueError",
+      "error_message": "history.json 数据结构无效"
+    }
+  ]
+}
+```
+
+### 错误隔离行为
+
+- 单个实验分析失败时不会中断其他实验。
+- 失败实验会记录在 `failed_experiments` 中。
+- 实验根目录不存在或根路径不是目录时，程序会退出并显示错误。
+
+### 测试
+
+```powershell
+python -m pytest .\tests -v
+```
+
+当前版本的本地验证记录为 64 个测试通过。
+
 ## Generated Outputs
 
 After a successful run, the output directory contains:
