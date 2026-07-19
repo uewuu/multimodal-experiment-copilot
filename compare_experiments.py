@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from read_config import CONFIG_PATH
@@ -158,6 +159,31 @@ def build_comparison_payload(
         "comparison_records": ranked_records,
         "failed_experiments": batch_result["failed_experiments"],
     }
+
+
+def write_comparison_json(
+    payload: dict,
+    output_path: Path,
+) -> Path:
+    """将实验对比载荷以 UTF-8 编码写入 JSON 文件。"""
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with output_path.open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            payload,
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
+        file.write("\n")
+
+    return output_path
 
 
 def main() -> None:

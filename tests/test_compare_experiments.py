@@ -10,6 +10,7 @@ from compare_experiments import (
     build_comparison_records,
     find_experiment_dirs,
     rank_comparison_records,
+    write_comparison_json,
 )
 
 
@@ -685,3 +686,82 @@ def test_build_comparison_payload_does_not_modify_batch_result() -> None:
     build_comparison_payload(batch_result)
 
     assert batch_result == original_batch_result
+
+
+def test_write_comparison_json_writes_simple_payload(tmp_path: Path) -> None:
+    payload = {"sort_by": "best_r2", "comparison_records": []}
+    output_path = tmp_path / "comparison.json"
+
+    write_comparison_json(payload, output_path)
+
+    assert output_path.is_file()
+    assert output_path.read_text(encoding="utf-8")
+
+
+def test_write_comparison_json_returns_output_path(tmp_path: Path) -> None:
+    output_path = tmp_path / "comparison.json"
+
+    result = write_comparison_json({}, output_path)
+
+    assert result == output_path
+
+
+def test_write_comparison_json_preserves_chinese_utf8(tmp_path: Path) -> None:
+    payload = {"message": "实验对比结果"}
+    output_path = tmp_path / "comparison.json"
+
+    write_comparison_json(payload, output_path)
+
+    text = output_path.read_text(encoding="utf-8")
+    assert "实验对比结果" in text
+
+
+def test_write_comparison_json_uses_two_space_indentation(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.json"
+
+    write_comparison_json({"sort_by": "best_r2"}, output_path)
+
+    text = output_path.read_text(encoding="utf-8")
+    assert '  "sort_by": "best_r2"' in text
+
+
+def test_write_comparison_json_ends_with_newline(tmp_path: Path) -> None:
+    output_path = tmp_path / "comparison.json"
+
+    write_comparison_json({}, output_path)
+
+    text = output_path.read_text(encoding="utf-8")
+    assert text.endswith("\n")
+
+
+def test_write_comparison_json_creates_nested_parent_directories(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "nested" / "reports" / "comparison.json"
+
+    write_comparison_json({}, output_path)
+
+    assert output_path.is_file()
+
+
+def test_write_comparison_json_does_not_modify_payload(tmp_path: Path) -> None:
+    payload = {
+        "sort_by": "best_r2",
+        "comparison_records": [{"experiment_name": "experiment_a"}],
+    }
+    original_payload = deepcopy(payload)
+
+    write_comparison_json(payload, tmp_path / "comparison.json")
+
+    assert payload == original_payload
+
+
+def test_write_comparison_json_raises_type_error_for_invalid_value(
+    tmp_path: Path,
+) -> None:
+    payload = {"invalid": {1, 2, 3}}
+
+    with pytest.raises(TypeError):
+        write_comparison_json(payload, tmp_path / "comparison.json")
