@@ -14,6 +14,7 @@ from compare_experiments import (
     parse_args,
     rank_comparison_records,
     run_comparison_pipeline,
+    write_comparison_markdown,
     write_comparison_json,
 )
 
@@ -1276,6 +1277,111 @@ def test_build_comparison_markdown_raises_key_error_for_missing_required_key() -
 
     with pytest.raises(KeyError, match="sort_by"):
         build_comparison_markdown(payload)
+
+
+def test_write_comparison_markdown_writes_content(tmp_path: Path) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_returns_output_path(tmp_path: Path) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    result = write_comparison_markdown("# Report", output_path)
+
+    assert result == output_path
+
+
+def test_write_comparison_markdown_preserves_chinese_utf8(tmp_path: Path) -> None:
+    output_path = tmp_path / "comparison.md"
+    markdown_text = "# 多实验对比报告\n\n测试成功"
+
+    write_comparison_markdown(markdown_text, output_path)
+
+    assert output_path.read_text(encoding="utf-8") == (
+        "# 多实验对比报告\n\n测试成功\n"
+    )
+
+
+def test_write_comparison_markdown_creates_nested_parent_directories(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "nested" / "reports" / "comparison.md"
+
+    write_comparison_markdown("# Report", output_path)
+
+    assert output_path.parent.is_dir()
+    assert output_path.is_file()
+
+
+def test_write_comparison_markdown_adds_trailing_newline_when_missing(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_preserves_single_trailing_newline(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report\n", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_normalizes_multiple_trailing_newlines(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report\n\n\n", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_normalizes_mixed_trailing_newlines(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    write_comparison_markdown("# Report\n\r\n\r", output_path)
+
+    assert output_path.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_comparison_markdown_does_not_modify_input_text(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+    markdown_text = "# Report\n\n\n"
+    original_text = markdown_text
+
+    write_comparison_markdown(markdown_text, output_path)
+
+    assert markdown_text == original_text
+
+
+def test_write_comparison_markdown_propagates_os_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_path = tmp_path / "comparison.md"
+
+    def raise_os_error(*args: object, **kwargs: object) -> object:
+        raise OSError("write failed")
+
+    monkeypatch.setattr(Path, "open", raise_os_error)
+
+    with pytest.raises(OSError, match="write failed"):
+        write_comparison_markdown("# Report", output_path)
 
 
 def test_parse_args_help_describes_experiment_root(

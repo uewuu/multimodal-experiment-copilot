@@ -236,6 +236,26 @@ def build_comparison_markdown(payload: dict) -> str:
     return "\n".join(report_lines) + "\n"
 
 
+def write_comparison_markdown(
+    markdown_text: str,
+    output_path: Path,
+) -> Path:
+    """将 Markdown 对比报告以 UTF-8 写入指定路径。"""
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    normalized_text = markdown_text.rstrip("\r\n") + "\n"
+
+    with output_path.open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+        file.write(normalized_text)
+
+    return output_path
+
+
 def write_comparison_json(
     payload: dict,
     output_path: Path,
