@@ -5,10 +5,12 @@ import pytest
 
 import compare_experiments
 from compare_experiments import (
+    DEFAULT_COMPARISON_OUTPUT_PATH,
     analyze_experiment_dirs,
     build_comparison_payload,
     build_comparison_records,
     find_experiment_dirs,
+    parse_args,
     rank_comparison_records,
     run_comparison_pipeline,
     write_comparison_json,
@@ -279,15 +281,25 @@ def test_main_reports_when_no_experiment_directories_are_found(
 ) -> None:
     monkeypatch.setattr(
         compare_experiments,
-        "find_experiment_dirs",
-        lambda root_dir: [],
+        "run_comparison_pipeline",
+        lambda **kwargs: {
+            "sort_by": "best_r2",
+            "descending": True,
+            "experiment_counts": {
+                "total": 0,
+                "successful": 0,
+                "failed": 0,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        },
     )
 
-    compare_experiments.main()
+    compare_experiments.main([])
 
     captured = capsys.readouterr()
     assert "没有找到有效实验目录：" in captured.out
-    assert "共找到 0 个有效实验目录" not in captured.out
+    assert "JSON 输出：" in captured.out
 
 
 def test_build_comparison_records_returns_empty_list_for_no_successes() -> None:
@@ -957,3 +969,134 @@ def test_run_comparison_pipeline_propagates_value_error_without_writing(
         run_comparison_pipeline(tmp_path, tmp_path / "result.json")
 
     assert write_called is False
+
+
+def test_parse_args_uses_default_values() -> None:
+    args = parse_args([])
+
+    assert args.experiment_root == compare_experiments.DEFAULT_EXPERIMENT_ROOT
+    assert args.output_path == DEFAULT_COMPARISON_OUTPUT_PATH
+    assert args.sort_by == "best_r2"
+    assert args.ascending is False
+
+
+def test_parse_args_accepts_custom_paths() -> None:
+    args = parse_args(
+        [
+            "--experiment-root",
+            "custom_experiments",
+            "--output-path",
+            "custom_outputs/result.json",
+        ]
+    )
+
+    assert args.experiment_root == Path("custom_experiments")
+    assert isinstance(args.experiment_root, Path)
+    assert args.output_path == Path("custom_outputs/result.json")
+    assert isinstance(args.output_path, Path)
+
+
+def test_parse_args_accepts_best_racc_sort_field() -> None:
+    args = parse_args(["--sort-by", "best_racc"])
+
+    assert args.sort_by == "best_racc"
+
+
+def test_parse_args_enables_ascending_order() -> None:
+    args = parse_args(["--ascending"])
+
+    assert args.ascending is True
+
+
+def test_parse_args_rejects_invalid_sort_field() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--sort-by", "invalid_metric"])
+
+
+def test_main_passes_parsed_arguments_to_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, object] = {}
+
+    def fake_pipeline(**kwargs: object) -> dict:
+        received.update(kwargs)
+        return {
+            "sort_by": "best_racc",
+            "descending": False,
+            "experiment_counts": {
+                "total": 2,
+                "successful": 2,
+                "failed": 0,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        }
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fake_pipeline,
+    )
+
+    compare_experiments.main(
+        [
+            "--experiment-root",
+            "custom_experiments",
+            "--output-path",
+            "custom_outputs/comparison.json",
+            "--sort-by",
+            "best_racc",
+            "--ascending",
+        ]
+    )
+
+    assert received == {
+        "experiment_root": Path("custom_experiments"),
+        "output_path": Path("custom_outputs/comparison.json"),
+        "sort_by": "best_racc",
+        "descending": False,
+    }
+
+
+def test_main_prints_comparison_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        lambda **kwargs: {
+            "sort_by": "best_r2",
+            "descending": True,
+            "experiment_counts": {
+                "total": 3,
+                "successful": 2,
+                "failed": 1,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        },
+    )
+
+    compare_experiments.main([])
+
+    captured = capsys.readouterr()
+    assert "实验比较完成：" in captured.out
+    assert "总实验数：3" in captured.out
+    assert "成功实验：2" in captured.out
+    assert "失败实验：1" in captured.out
+    assert "best_r2" in captured.out
+    assert "降序" in captured.out
+    assert "JSON 输出" in captured.out
+
+
+def test_parse_args_help_describes_experiment_root(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error_info:
+        parse_args(["--help"])
+
+    captured = capsys.readouterr()
+    assert error_info.value.code == 0
+    assert "--experiment-root" in captured.out
+    assert "包含多个实验目录的根目录" in captured.out

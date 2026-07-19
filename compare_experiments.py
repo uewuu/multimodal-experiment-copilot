@@ -1,3 +1,4 @@
+import argparse
 import json
 from pathlib import Path
 
@@ -7,6 +8,9 @@ from summarize_experiment import build_experiment_summary
 
 
 DEFAULT_EXPERIMENT_ROOT = Path("examples")
+DEFAULT_COMPARISON_OUTPUT_PATH = Path(
+    "outputs/comparison.json"
+)
 
 CONFIG_FILENAME = CONFIG_PATH.name
 HISTORY_FILENAME = HISTORY_PATH.name
@@ -212,28 +216,71 @@ def run_comparison_pipeline(
     return payload
 
 
-def main() -> None:
+def parse_args(
+    argv: list[str] | None = None,
+) -> argparse.Namespace:
+    """解析批量比较机器学习实验所需的命令行参数。"""
+    parser = argparse.ArgumentParser(
+        description="批量比较机器学习实验并生成 JSON 结果。"
+    )
+    parser.add_argument(
+        "--experiment-root",
+        type=Path,
+        default=DEFAULT_EXPERIMENT_ROOT,
+        help="包含多个实验目录的根目录",
+    )
+    parser.add_argument(
+        "--output-path",
+        type=Path,
+        default=DEFAULT_COMPARISON_OUTPUT_PATH,
+        help="实验对比结果的 JSON 输出路径",
+    )
+    parser.add_argument(
+        "--sort-by",
+        choices=sorted(SORTABLE_COMPARISON_FIELDS),
+        default="best_r2",
+        help="实验对比记录的排序指标",
+    )
+    parser.add_argument(
+        "--ascending",
+        action="store_true",
+        help="按指定指标升序排列",
+    )
+
+    return parser.parse_args(argv)
+
+
+def main(
+    argv: list[str] | None = None,
+) -> None:
+    args = parse_args(argv)
+
     try:
-        experiment_dirs = find_experiment_dirs(
-            DEFAULT_EXPERIMENT_ROOT
+        payload = run_comparison_pipeline(
+            experiment_root=args.experiment_root,
+            output_path=args.output_path,
+            sort_by=args.sort_by,
+            descending=not args.ascending,
         )
     except (FileNotFoundError, NotADirectoryError) as error:
         raise SystemExit(
-            f"实验目录扫描失败：{error}"
+            f"实验比较失败：{error}"
         ) from error
 
-    if not experiment_dirs:
-        print(
-            f"没有找到有效实验目录："
-            f"{DEFAULT_EXPERIMENT_ROOT}"
-        )
+    counts = payload["experiment_counts"]
+
+    if counts["total"] == 0:
+        print(f"没有找到有效实验目录：{args.experiment_root}")
+        print(f"- JSON 输出：{args.output_path}")
         return
 
-    print(f"共找到 {len(experiment_dirs)} 个有效实验目录：")
-    print("-" * 50)
-
-    for experiment_dir in experiment_dirs:
-        print(f"- {experiment_dir}")
+    sort_direction = "降序" if payload["descending"] else "升序"
+    print("实验比较完成：")
+    print(f"- 总实验数：{counts['total']}")
+    print(f"- 成功实验：{counts['successful']}")
+    print(f"- 失败实验：{counts['failed']}")
+    print(f"- 排序方式：{payload['sort_by']}（{sort_direction}）")
+    print(f"- JSON 输出：{args.output_path}")
 
 
 if __name__ == "__main__":
