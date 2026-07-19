@@ -1100,3 +1100,24 @@ def test_parse_args_help_describes_experiment_root(
     assert error_info.value.code == 0
     assert "--experiment-root" in captured.out
     assert "包含多个实验目录的根目录" in captured.out
+    assert "--output-path" in captured.out
+    assert "实验对比结果的 JSON 输出路径" in captured.out
+
+    help_lines = captured.out.splitlines()
+    experiment_option_index = next(
+        index
+        for index, line in enumerate(help_lines)
+        if line.strip().startswith("--experiment-root")
+    )
+    output_option_index = next(
+        index
+        for index, line in enumerate(help_lines)
+        if line.strip().startswith("--output-path")
+    )
+
+    assert help_lines[experiment_option_index + 1].strip() == (
+        "包含多个实验目录的根目录"
+    )
+    assert help_lines[output_option_index + 1].strip() == (
+        "实验对比结果的 JSON 输出路径"
+    )
