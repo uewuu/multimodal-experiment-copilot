@@ -973,6 +973,268 @@ def test_run_comparison_pipeline_propagates_value_error_without_writing(
     assert write_called is False
 
 
+def test_run_comparison_pipeline_skips_markdown_when_path_is_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    payload = {"comparison_records": []}
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        lambda result, **kwargs: payload,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda result, path: calls.append("write_json"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_markdown",
+        lambda result: calls.append("build_markdown"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_markdown",
+        lambda text, path: calls.append("write_markdown"),
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=None,
+    )
+
+    assert calls == ["write_json"]
+
+
+def test_run_comparison_pipeline_builds_markdown_when_path_is_provided(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"comparison_records": []}
+    received_payloads: list[dict] = []
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        lambda result, **kwargs: payload,
+    )
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_markdown",
+        lambda result: received_payloads.append(result) or "# Report\n",
+    )
+    monkeypatch.setattr(compare_experiments, "write_comparison_markdown", lambda text, path: path)
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=tmp_path / "comparison.md",
+    )
+
+    assert received_payloads == [payload]
+
+
+def test_run_comparison_pipeline_writes_markdown_to_requested_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    markdown_output_path = tmp_path / "reports" / "comparison.md"
+    received: dict[str, object] = {}
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", lambda payload: "# Report\n")
+
+    def fake_write_markdown(text: str, path: Path) -> Path:
+        received["text"] = text
+        received["path"] = path
+        return path
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_markdown",
+        fake_write_markdown,
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=markdown_output_path,
+    )
+
+    assert received == {"text": "# Report\n", "path": markdown_output_path}
+
+
+def test_run_comparison_pipeline_calls_markdown_after_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def record(name: str, result: object) -> object:
+        calls.append(name)
+        return result
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        lambda root: record("find", []),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "analyze_experiment_dirs",
+        lambda dirs: record("analyze", {}),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        lambda result, **kwargs: record("build_payload", {}),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda payload, path: record("write_json", path),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_markdown",
+        lambda payload: record("build_markdown", "# Report\n"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_markdown",
+        lambda text, path: record("write_markdown", path),
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=tmp_path / "comparison.md",
+    )
+
+    assert calls == [
+        "find",
+        "analyze",
+        "build_payload",
+        "write_json",
+        "build_markdown",
+        "write_markdown",
+    ]
+
+
+def test_run_comparison_pipeline_returns_payload_with_markdown_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"comparison_records": []}
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: payload)
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", lambda result: "# Report\n")
+    monkeypatch.setattr(compare_experiments, "write_comparison_markdown", lambda text, path: path)
+
+    result = run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=tmp_path / "comparison.md",
+    )
+
+    assert result is payload
+
+
+def test_run_comparison_pipeline_propagates_markdown_build_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    markdown_write_called = False
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+
+    def raise_build_error(payload: dict) -> str:
+        raise ValueError("Markdown build failed")
+
+    def fake_write_markdown(text: str, path: Path) -> Path:
+        nonlocal markdown_write_called
+        markdown_write_called = True
+        return path
+
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", raise_build_error)
+    monkeypatch.setattr(compare_experiments, "write_comparison_markdown", fake_write_markdown)
+
+    with pytest.raises(ValueError, match="Markdown build failed"):
+        run_comparison_pipeline(
+            tmp_path,
+            tmp_path / "comparison.json",
+            markdown_output_path=tmp_path / "comparison.md",
+        )
+
+    assert markdown_write_called is False
+
+
+def test_run_comparison_pipeline_propagates_markdown_write_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", lambda result: "# Report\n")
+
+    def raise_write_error(text: str, path: Path) -> Path:
+        raise OSError("Markdown write failed")
+
+    monkeypatch.setattr(compare_experiments, "write_comparison_markdown", raise_write_error)
+
+    with pytest.raises(OSError, match="Markdown write failed"):
+        run_comparison_pipeline(
+            tmp_path,
+            tmp_path / "comparison.json",
+            markdown_output_path=tmp_path / "comparison.md",
+        )
+
+
+def test_run_comparison_pipeline_writes_json_before_markdown_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda result, path: calls.append("write_json"),
+    )
+
+    def raise_build_error(payload: dict) -> str:
+        calls.append("build_markdown")
+        raise ValueError("Markdown build failed")
+
+    monkeypatch.setattr(compare_experiments, "build_comparison_markdown", raise_build_error)
+
+    with pytest.raises(ValueError, match="Markdown build failed"):
+        run_comparison_pipeline(
+            tmp_path,
+            tmp_path / "comparison.json",
+            markdown_output_path=tmp_path / "comparison.md",
+        )
+
+    assert calls == ["write_json", "build_markdown"]
+
+
 def test_parse_args_uses_default_values() -> None:
     args = parse_args([])
 

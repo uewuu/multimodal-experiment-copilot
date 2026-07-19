@@ -286,8 +286,9 @@ def run_comparison_pipeline(
     output_path: Path,
     sort_by: str = "best_r2",
     descending: bool = True,
+    markdown_output_path: Path | None = None,
 ) -> dict:
-    """执行实验发现、分析、载荷构建和 JSON 写入流程。"""
+    """总是写入 JSON，可选写入 Markdown，并返回实验对比载荷。"""
     experiment_dirs = find_experiment_dirs(
         experiment_root
     )
@@ -303,6 +304,13 @@ def run_comparison_pipeline(
         payload,
         output_path,
     )
+
+    if markdown_output_path is not None:
+        markdown_text = build_comparison_markdown(payload)
+        write_comparison_markdown(
+            markdown_text,
+            markdown_output_path,
+        )
 
     return payload
 
