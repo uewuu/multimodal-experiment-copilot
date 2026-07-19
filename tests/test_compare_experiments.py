@@ -10,6 +10,7 @@ from compare_experiments import (
     build_comparison_records,
     find_experiment_dirs,
     rank_comparison_records,
+    run_comparison_pipeline,
     write_comparison_json,
 )
 
@@ -765,3 +766,194 @@ def test_write_comparison_json_raises_type_error_for_invalid_value(
 
     with pytest.raises(TypeError):
         write_comparison_json(payload, tmp_path / "comparison.json")
+
+
+def test_run_comparison_pipeline_calls_dependencies_in_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_find(experiment_root: Path) -> list[Path]:
+        calls.append("find")
+        return []
+
+    def fake_analyze(experiment_dirs: list[Path]) -> dict:
+        calls.append("analyze")
+        return {"successful_experiments": [], "failed_experiments": []}
+
+    def fake_build(batch_result: dict, **kwargs: object) -> dict:
+        calls.append("build")
+        return {"comparison_records": []}
+
+    def fake_write(payload: dict, output_path: Path) -> Path:
+        calls.append("write")
+        return output_path
+
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", fake_find)
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", fake_analyze)
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", fake_build)
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", fake_write)
+
+    run_comparison_pipeline(tmp_path / "experiments", tmp_path / "result.json")
+
+    assert calls == ["find", "analyze", "build", "write"]
+
+
+def test_run_comparison_pipeline_passes_experiment_root_to_find(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment_root = tmp_path / "experiments"
+    received: dict[str, Path] = {}
+
+    def fake_find(root: Path) -> list[Path]:
+        received["experiment_root"] = root
+        return []
+
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", fake_find)
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda payload, path: path)
+
+    run_comparison_pipeline(experiment_root, tmp_path / "result.json")
+
+    assert received["experiment_root"] == experiment_root
+
+
+def test_run_comparison_pipeline_passes_found_dirs_to_analyze(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment_dirs = [tmp_path / "experiment_a", tmp_path / "experiment_b"]
+    received: dict[str, list[Path]] = {}
+
+    def fake_analyze(dirs: list[Path]) -> dict:
+        received["experiment_dirs"] = dirs
+        return {}
+
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: experiment_dirs)
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", fake_analyze)
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: {})
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda payload, path: path)
+
+    run_comparison_pipeline(tmp_path, tmp_path / "result.json")
+
+    assert received["experiment_dirs"] is experiment_dirs
+
+
+def test_run_comparison_pipeline_passes_batch_and_sort_options_to_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_result = {"successful_experiments": [], "failed_experiments": []}
+    received: dict[str, object] = {}
+
+    def fake_build(
+        result: dict,
+        *,
+        sort_by: str,
+        descending: bool,
+    ) -> dict:
+        received["batch_result"] = result
+        received["sort_by"] = sort_by
+        received["descending"] = descending
+        return {}
+
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: batch_result)
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", fake_build)
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda payload, path: path)
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "result.json",
+        sort_by="best_racc",
+        descending=False,
+    )
+
+    assert received == {
+        "batch_result": batch_result,
+        "sort_by": "best_racc",
+        "descending": False,
+    }
+
+
+def test_run_comparison_pipeline_passes_payload_and_path_to_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"comparison_records": []}
+    output_path = tmp_path / "result.json"
+    received: dict[str, object] = {}
+
+    def fake_write(result: dict, path: Path) -> Path:
+        received["payload"] = result
+        received["output_path"] = path
+        return path
+
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: payload)
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", fake_write)
+
+    run_comparison_pipeline(tmp_path, output_path)
+
+    assert received == {"payload": payload, "output_path": output_path}
+
+
+def test_run_comparison_pipeline_returns_built_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"comparison_records": [{"experiment_name": "experiment_a"}]}
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", lambda result, **kwargs: payload)
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda result, path: path)
+
+    result = run_comparison_pipeline(tmp_path, tmp_path / "result.json")
+
+    assert result is payload
+
+
+def test_run_comparison_pipeline_propagates_file_not_found_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_missing_root(root: Path) -> list[Path]:
+        raise FileNotFoundError("missing root")
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        raise_missing_root,
+    )
+
+    with pytest.raises(FileNotFoundError, match="missing root"):
+        run_comparison_pipeline(tmp_path, tmp_path / "result.json")
+
+
+def test_run_comparison_pipeline_propagates_value_error_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_called = False
+
+    def raise_invalid_sort(result: dict, **kwargs: object) -> dict:
+        raise ValueError("invalid sort field")
+
+    def fake_write(payload: dict, path: Path) -> Path:
+        nonlocal write_called
+        write_called = True
+        return path
+
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", lambda dirs: {})
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", raise_invalid_sort)
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", fake_write)
+
+    with pytest.raises(ValueError, match="invalid sort field"):
+        run_comparison_pipeline(tmp_path, tmp_path / "result.json")
+
+    assert write_called is False

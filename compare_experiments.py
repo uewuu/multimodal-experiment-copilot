@@ -186,6 +186,32 @@ def write_comparison_json(
     return output_path
 
 
+def run_comparison_pipeline(
+    experiment_root: Path,
+    output_path: Path,
+    sort_by: str = "best_r2",
+    descending: bool = True,
+) -> dict:
+    """执行实验发现、分析、载荷构建和 JSON 写入流程。"""
+    experiment_dirs = find_experiment_dirs(
+        experiment_root
+    )
+    batch_result = analyze_experiment_dirs(
+        experiment_dirs
+    )
+    payload = build_comparison_payload(
+        batch_result,
+        sort_by=sort_by,
+        descending=descending,
+    )
+    write_comparison_json(
+        payload,
+        output_path,
+    )
+
+    return payload
+
+
 def main() -> None:
     try:
         experiment_dirs = find_experiment_dirs(
