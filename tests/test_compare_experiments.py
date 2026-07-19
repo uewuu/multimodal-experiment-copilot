@@ -7,6 +7,7 @@ import compare_experiments
 from compare_experiments import (
     DEFAULT_COMPARISON_OUTPUT_PATH,
     analyze_experiment_dirs,
+    build_comparison_markdown,
     build_comparison_payload,
     build_comparison_records,
     find_experiment_dirs,
@@ -1088,6 +1089,171 @@ def test_main_prints_comparison_summary(
     assert "best_r2" in captured.out
     assert "降序" in captured.out
     assert "JSON 输出" in captured.out
+
+
+def markdown_payload() -> dict:
+    return {
+        "sort_by": "best_r2",
+        "descending": True,
+        "experiment_counts": {"total": 0, "successful": 0, "failed": 0},
+        "comparison_records": [],
+        "failed_experiments": [],
+    }
+
+
+def comparison_record(name: str, value: float = 0.5) -> dict:
+    return {
+        "experiment_name": name,
+        "experiment_dir": f"examples/{name}",
+        "best_r2": value,
+        "best_r2_epoch": 2,
+        "best_racc": value,
+        "best_racc_epoch": 3,
+    }
+
+
+def test_build_comparison_markdown_handles_no_successful_experiments() -> None:
+    markdown = build_comparison_markdown(markdown_payload())
+
+    assert "No successful experiments were analyzed." in markdown
+
+
+def test_build_comparison_markdown_builds_ranked_table_for_one_experiment() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [comparison_record("experiment_a", 0.9)]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "| Rank | Experiment | Directory | Best R² |" in markdown
+    assert "| 1 | experiment_a | examples/experiment_a |" in markdown
+
+
+def test_build_comparison_markdown_preserves_record_order() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [
+        comparison_record("second", 0.2),
+        comparison_record("first", 0.9),
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert markdown.index("second") < markdown.index("first")
+
+
+def test_build_comparison_markdown_numbers_ranks_from_one() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [
+        comparison_record("a"),
+        comparison_record("b"),
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "| 1 | a |" in markdown
+    assert "| 2 | b |" in markdown
+
+
+def test_build_comparison_markdown_formats_metrics_to_six_decimals() -> None:
+    payload = markdown_payload()
+    record = comparison_record("a")
+    record["best_r2"] = 0.123456789
+    record["best_racc"] = 0.9
+    payload["comparison_records"] = [record]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "0.123457" in markdown
+    assert "0.900000" in markdown
+
+
+def test_build_comparison_markdown_displays_descending_direction() -> None:
+    markdown = build_comparison_markdown(markdown_payload())
+
+    assert "- Sort direction: Descending" in markdown
+
+
+def test_build_comparison_markdown_displays_ascending_direction() -> None:
+    payload = markdown_payload()
+    payload["descending"] = False
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "- Sort direction: Ascending" in markdown
+
+
+def test_build_comparison_markdown_omits_failed_section_when_no_failures() -> None:
+    markdown = build_comparison_markdown(markdown_payload())
+
+    assert "## Failed Experiments" not in markdown
+
+
+def test_build_comparison_markdown_includes_failed_experiment_table() -> None:
+    payload = markdown_payload()
+    payload["failed_experiments"] = [
+        {
+            "experiment_name": "broken",
+            "experiment_dir": "examples/broken",
+            "error_type": "ValueError",
+            "error_message": "invalid metric",
+        }
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "## Failed Experiments" in markdown
+    assert "| broken | examples/broken | ValueError | invalid metric |" in markdown
+
+
+def test_build_comparison_markdown_escapes_table_pipes() -> None:
+    payload = markdown_payload()
+    payload["failed_experiments"] = [
+        {
+            "experiment_name": "a|b",
+            "experiment_dir": "dir|name",
+            "error_type": "Type|Error",
+            "error_message": "left|right",
+        }
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    for escaped_value in ["a\\|b", "dir\\|name", "Type\\|Error", "left\\|right"]:
+        assert escaped_value in markdown
+
+
+def test_build_comparison_markdown_replaces_multiline_cells_with_html_breaks() -> None:
+    payload = markdown_payload()
+    payload["failed_experiments"] = [
+        {
+            "experiment_name": "broken",
+            "experiment_dir": "line1\r\nline2",
+            "error_type": "ValueError",
+            "error_message": "first\rsecond\nthird",
+        }
+    ]
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "line1<br>line2" in markdown
+    assert "first<br>second<br>third" in markdown
+
+
+def test_build_comparison_markdown_does_not_modify_payload() -> None:
+    payload = markdown_payload()
+    payload["comparison_records"] = [comparison_record("a")]
+    original_payload = deepcopy(payload)
+
+    build_comparison_markdown(payload)
+
+    assert payload == original_payload
+
+
+def test_build_comparison_markdown_raises_key_error_for_missing_required_key() -> None:
+    payload = markdown_payload()
+    del payload["sort_by"]
+
+    with pytest.raises(KeyError, match="sort_by"):
+        build_comparison_markdown(payload)
 
 
 def test_parse_args_help_describes_experiment_root(
