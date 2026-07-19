@@ -42,6 +42,14 @@ AI Agent, LLM application, RAG, and AI backend engineering roles.
 - Support custom experiment and output directories.
 - Provide friendly errors when required files are missing.
 - Provide a command-line help interface with `argparse`.
+- Discover valid experiment directories under a shared root directory.
+- Analyze multiple experiments in one run.
+- Isolate per-experiment failures without interrupting the full batch.
+- Build normalized comparison records.
+- Sort comparison results by best R² or best RACC.
+- Export UTF-8 JSON comparison results.
+- Provide a configurable multi-experiment comparison CLI.
+- Cover the comparison workflow with automated pytest tests.
 
 ## Project Structure
 
@@ -54,8 +62,11 @@ multimodal-experiment-copilot/
 ├── notes/
 │   └── day01.md
 ├── outputs/
+├── tests/
+│   └── test_compare_experiments.py
 ├── .gitignore
 ├── README.md
+├── compare_experiments.py
 ├── generate_report.py
 ├── read_config.py
 ├── read_history.py
@@ -69,11 +80,18 @@ generated files.
 
 - Python 3.11 or later
 - PyYAML
+- pytest for development and testing
 
-Install the current dependency with:
+Runtime dependency:
 
 ```bash
 pip install pyyaml
+```
+
+Test dependency:
+
+```bash
+pip install pytest
 ```
 
 ## Usage
@@ -115,7 +133,7 @@ hparams.yaml
 history.json
 ```
 
-## 多实验比较
+## Multi-experiment Comparison / 多实验比较
 
 ### 实验目录要求
 
@@ -218,7 +236,9 @@ python -m pytest .\tests -v
 
 ## Generated Outputs
 
-After a successful run, the output directory contains:
+### Single-experiment report
+
+After a successful `generate_report.py` run, the output directory contains:
 
 ```text
 experiment_summary.json
@@ -231,6 +251,21 @@ The Markdown report currently includes:
 2. Module switches.
 3. Validation metric table.
 4. Automatic experiment analysis.
+
+### Multi-experiment comparison
+
+By default, `compare_experiments.py` generates:
+
+```text
+outputs/comparison.json
+```
+
+The comparison JSON contains:
+
+1. The selected sort field and sort direction.
+2. Total, successful, and failed experiment counts.
+3. Sorted experiment metric records.
+4. Failed experiments and their error details.
 
 ## Example Analysis
 
@@ -264,6 +299,15 @@ The project has been developed through small, verifiable Git commits:
 6. Parameterize experiment input paths.
 7. Parameterize report output paths.
 8. Add command-line report interface.
+9. Discover valid experiment directories.
+10. Add batch experiment analysis with failure isolation.
+11. Build normalized experiment comparison records.
+12. Add metric-based comparison sorting.
+13. Generate structured comparison JSON output.
+14. Add an end-to-end comparison pipeline.
+15. Add the multi-experiment comparison CLI.
+16. Add automated tests for the comparison workflow.
+17. Document multi-experiment comparison usage.
 
 The complete evolution is available in the repository commit history.
 
@@ -278,11 +322,11 @@ The complete evolution is available in the repository commit history.
 - [x] Markdown report generation
 - [x] Configurable input and output paths
 - [x] Command-line interface
-- [ ] Multi-experiment batch analysis
+- [x] Multi-experiment batch analysis
 - [ ] Experiment comparison tables
 - [ ] Trait-wise metric summaries
 - [ ] Configuration and schema validation
-- [ ] Automated tests with `pytest`
+- [x] Automated tests with `pytest`
 - [ ] LLM Tool Calling
 - [ ] LangGraph workflow
 - [ ] RAG support
