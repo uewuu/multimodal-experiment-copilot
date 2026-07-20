@@ -1,10 +1,50 @@
 """通用实验指标定义。"""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
 
 MetricDirection = Literal["maximize", "minimize"]
+
+
+def get_value_at_path(
+    data: Mapping[str, object],
+    path: tuple[str, ...],
+) -> object:
+    """按字符串键路径读取嵌套映射中的值。"""
+    if not isinstance(data, Mapping):
+        raise TypeError("data must be a mapping")
+
+    if not isinstance(path, tuple):
+        raise TypeError("path must be a tuple")
+    if not path:
+        raise ValueError("path must not be empty")
+    for index, path_part in enumerate(path):
+        if not isinstance(path_part, str):
+            raise TypeError(f"path[{index}] must be a string")
+        if not path_part.strip():
+            raise ValueError(
+                f"path[{index}] must not be empty or whitespace"
+            )
+        if path_part != path_part.strip():
+            raise ValueError(
+                f"path[{index}] must not contain leading or trailing whitespace"
+            )
+
+    current: object = data
+    for index, key in enumerate(path):
+        if not isinstance(current, Mapping):
+            parent_path = ".".join(path[:index])
+            raise TypeError(
+                f"value at path '{parent_path}' must be a mapping"
+            )
+        if key not in current:
+            current_path = ".".join(path[: index + 1])
+            raise KeyError(f"missing key at path '{current_path}'")
+        current = current[key]
+
+    return current
 
 
 @dataclass(frozen=True)
