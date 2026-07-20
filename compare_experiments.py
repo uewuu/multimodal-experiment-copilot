@@ -6,6 +6,7 @@ from pathlib import Path
 from metrics import MetricSpec
 from read_config import CONFIG_PATH
 from read_history import HISTORY_PATH
+from read_metrics_config import read_metric_specs_config
 from summarize_experiment import build_experiment_summary
 
 
@@ -60,6 +61,40 @@ def _validate_metric_specs(
     if isinstance(metric_specs, tuple):
         return metric_specs
     return tuple(validated_specs)
+
+
+def _resolve_default_sort_by(
+    requested_sort_by: str | None,
+) -> str:
+    resolved_sort_by = (
+        requested_sort_by
+        if requested_sort_by is not None
+        else "best_r2"
+    )
+    allowed_fields = ("best_r2", "best_racc")
+    if resolved_sort_by not in SORTABLE_COMPARISON_FIELDS:
+        raise ValueError(
+            "sort_by must be one of: " + ", ".join(allowed_fields)
+        )
+    return resolved_sort_by
+
+
+def _resolve_dynamic_sort_by(
+    requested_sort_by: str | None,
+    metric_specs: Sequence[MetricSpec],
+) -> str:
+    metric_names = tuple(spec.name for spec in metric_specs)
+    resolved_sort_by = (
+        requested_sort_by
+        if requested_sort_by is not None
+        else metric_names[0]
+    )
+    if resolved_sort_by not in metric_names:
+        raise ValueError(
+            "sort_by must be one of configured metric names: "
+            + ", ".join(metric_names)
+        )
+    return resolved_sort_by
 
 
 def find_experiment_dirs(root_dir: Path) -> list[Path]:
@@ -536,10 +571,19 @@ def parse_args(
         help="Markdown 对比报告输出路径",
     )
     parser.add_argument(
+        "--metrics-config",
+        type=Path,
+        default=None,
+        help="独立指标 YAML 配置文件路径",
+    )
+    parser.add_argument(
         "--sort-by",
-        choices=sorted(SORTABLE_COMPARISON_FIELDS),
-        default="best_r2",
-        help="实验对比记录的排序指标",
+        type=str,
+        default=None,
+        help=(
+            "排序字段。默认模式未指定时使用 best_r2；"
+            "动态指标模式未指定时使用配置中的第一个指标"
+        ),
     )
     parser.add_argument(
         "--ascending",
@@ -555,14 +599,34 @@ def main(
 ) -> None:
     args = parse_args(argv)
 
-    try:
-        payload = run_comparison_pipeline(
-            experiment_root=args.experiment_root,
-            output_path=args.output_path,
-            sort_by=args.sort_by,
-            descending=not args.ascending,
-            markdown_output_path=args.markdown_output_path,
+    metric_specs = None
+    if args.metrics_config is None:
+        resolved_sort_by = _resolve_default_sort_by(args.sort_by)
+    else:
+        metric_specs = read_metric_specs_config(args.metrics_config)
+        resolved_sort_by = _resolve_dynamic_sort_by(
+            args.sort_by,
+            metric_specs,
         )
+
+    try:
+        if metric_specs is None:
+            payload = run_comparison_pipeline(
+                experiment_root=args.experiment_root,
+                output_path=args.output_path,
+                sort_by=resolved_sort_by,
+                descending=not args.ascending,
+                markdown_output_path=args.markdown_output_path,
+            )
+        else:
+            payload = run_comparison_pipeline(
+                experiment_root=args.experiment_root,
+                output_path=args.output_path,
+                sort_by=resolved_sort_by,
+                descending=not args.ascending,
+                markdown_output_path=args.markdown_output_path,
+                metric_specs=metric_specs,
+            )
     except (FileNotFoundError, NotADirectoryError) as error:
         raise SystemExit(
             f"实验比较失败：{error}"

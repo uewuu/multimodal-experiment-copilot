@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import yaml
 
 import compare_experiments
 from metrics import MetricSpec
@@ -1244,7 +1245,8 @@ def test_parse_args_uses_default_values() -> None:
     assert args.experiment_root == compare_experiments.DEFAULT_EXPERIMENT_ROOT
     assert args.output_path == DEFAULT_COMPARISON_OUTPUT_PATH
     assert args.markdown_output_path == DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH
-    assert args.sort_by == "best_r2"
+    assert args.metrics_config is None
+    assert args.sort_by is None
     assert args.ascending is False
 
 
@@ -1290,9 +1292,10 @@ def test_parse_args_enables_ascending_order() -> None:
     assert args.ascending is True
 
 
-def test_parse_args_rejects_invalid_sort_field() -> None:
-    with pytest.raises(SystemExit):
-        parse_args(["--sort-by", "invalid_metric"])
+def test_parse_args_accepts_sort_field_without_static_choices() -> None:
+    args = parse_args(["--sort-by", "accuracy"])
+
+    assert args.sort_by == "accuracy"
 
 
 def test_main_passes_parsed_arguments_to_pipeline(
@@ -2875,3 +2878,473 @@ def test_dynamic_markdown_propagates_key_error_for_damaged_payload(
         build_comparison_markdown(payload)
 
     assert error_info.value.args[0] == expected_key
+
+
+def _empty_cli_payload(
+    sort_by: str,
+    descending: bool,
+) -> dict:
+    return {
+        "sort_by": sort_by,
+        "descending": descending,
+        "experiment_counts": {
+            "total": 0,
+            "successful": 0,
+            "failed": 0,
+        },
+        "comparison_records": [],
+        "failed_experiments": [],
+    }
+
+
+def test_parse_args_accepts_metrics_config_path() -> None:
+    args = parse_args(["--metrics-config", "configs/metrics.yaml"])
+
+    assert args.metrics_config == Path("configs/metrics.yaml")
+    assert isinstance(args.metrics_config, Path)
+
+
+def test_parse_args_accepts_best_r2_sort_field() -> None:
+    args = parse_args(["--sort-by", "best_r2"])
+
+    assert args.sort_by == "best_r2"
+
+
+def test_parse_args_namespace_contains_all_cli_fields() -> None:
+    args = parse_args([])
+
+    assert vars(args).keys() == {
+        "experiment_root",
+        "output_path",
+        "markdown_output_path",
+        "metrics_config",
+        "sort_by",
+        "ascending",
+    }
+
+
+def test_parse_args_help_describes_dynamic_metric_options(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error_info:
+        parse_args(["--help"])
+
+    assert error_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--metrics-config" in help_text
+    assert "独立指标 YAML 配置文件路径" in help_text
+    assert "默认模式未指定时使用 best_r2" in help_text
+    assert "动态指标模式未指定时使用配置中的第一个指标" in help_text
+
+
+def test_main_default_mode_uses_legacy_pipeline_call_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, object] = {}
+
+    def fail_if_metrics_config_is_read(config_path: Path) -> tuple:
+        pytest.fail(f"unexpected metrics config read: {config_path}")
+
+    def strict_legacy_pipeline(
+        *,
+        experiment_root: Path,
+        output_path: Path,
+        sort_by: str,
+        descending: bool,
+        markdown_output_path: Path,
+    ) -> dict:
+        received.update(
+            experiment_root=experiment_root,
+            output_path=output_path,
+            sort_by=sort_by,
+            descending=descending,
+            markdown_output_path=markdown_output_path,
+        )
+        return _empty_cli_payload(sort_by, descending)
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "read_metric_specs_config",
+        fail_if_metrics_config_is_read,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        strict_legacy_pipeline,
+    )
+
+    compare_experiments.main([])
+
+    assert received == {
+        "experiment_root": compare_experiments.DEFAULT_EXPERIMENT_ROOT,
+        "output_path": DEFAULT_COMPARISON_OUTPUT_PATH,
+        "sort_by": "best_r2",
+        "descending": True,
+        "markdown_output_path": DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH,
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid_sort_by",
+    ["accuracy", "loss", "display_name", ""],
+)
+def test_main_default_mode_rejects_invalid_sort_before_pipeline(
+    invalid_sort_by: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called(*args: object, **kwargs: object) -> dict:
+        pytest.fail("pipeline must not run for an invalid sort field")
+
+    def fail_if_metrics_config_is_read(config_path: Path) -> tuple:
+        pytest.fail(f"unexpected metrics config read: {config_path}")
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "read_metric_specs_config",
+        fail_if_metrics_config_is_read,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"^sort_by must be one of: best_r2, best_racc$",
+    ):
+        compare_experiments.main(["--sort-by", invalid_sort_by])
+
+
+def test_main_dynamic_mode_reads_config_once_and_passes_same_specs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metric_specs = configurable_metric_specs()
+    original_specs = deepcopy(metric_specs)
+    config_path = Path("configs/metrics.yaml")
+    calls: list[Path] = []
+    received: dict[str, object] = {}
+
+    def fake_read_metric_specs_config(path: Path) -> tuple[MetricSpec, ...]:
+        calls.append(path)
+        return metric_specs
+
+    def strict_dynamic_pipeline(
+        *,
+        experiment_root: Path,
+        output_path: Path,
+        sort_by: str,
+        descending: bool,
+        markdown_output_path: Path,
+        metric_specs: tuple[MetricSpec, ...],
+    ) -> dict:
+        received.update(
+            experiment_root=experiment_root,
+            output_path=output_path,
+            sort_by=sort_by,
+            descending=descending,
+            markdown_output_path=markdown_output_path,
+            metric_specs=metric_specs,
+        )
+        return _empty_cli_payload(sort_by, descending)
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "read_metric_specs_config",
+        fake_read_metric_specs_config,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        strict_dynamic_pipeline,
+    )
+
+    compare_experiments.main(
+        [
+            "--experiment-root",
+            "experiments",
+            "--output-path",
+            "custom/comparison.json",
+            "--markdown-output-path",
+            "custom/comparison.md",
+            "--metrics-config",
+            str(config_path),
+            "--sort-by",
+            "accuracy",
+            "--ascending",
+        ]
+    )
+
+    assert calls == [config_path]
+    assert received == {
+        "experiment_root": Path("experiments"),
+        "output_path": Path("custom/comparison.json"),
+        "sort_by": "accuracy",
+        "descending": False,
+        "markdown_output_path": Path("custom/comparison.md"),
+        "metric_specs": metric_specs,
+    }
+    assert received["metric_specs"] is metric_specs
+    assert metric_specs == original_specs
+
+
+def test_main_dynamic_mode_uses_first_configured_metric_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metric_specs = (
+        MetricSpec(
+            name="validation_loss",
+            path=("validation", "metrics", "loss"),
+            direction="minimize",
+            display_name="Validation Loss",
+        ),
+        MetricSpec(
+            name="accuracy",
+            path=("validation", "metrics", "accuracy"),
+            direction="maximize",
+            display_name="Accuracy",
+        ),
+    )
+    received: dict[str, object] = {}
+    monkeypatch.setattr(
+        compare_experiments,
+        "read_metric_specs_config",
+        lambda path: metric_specs,
+    )
+
+    def fake_pipeline(**kwargs: object) -> dict:
+        received.update(kwargs)
+        return _empty_cli_payload(
+            str(kwargs["sort_by"]),
+            bool(kwargs["descending"]),
+        )
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fake_pipeline,
+    )
+
+    compare_experiments.main(
+        ["--metrics-config", "configs/metrics.yaml"]
+    )
+
+    assert received["sort_by"] == "validation_loss"
+    assert received["descending"] is True
+
+
+@pytest.mark.parametrize(
+    "invalid_sort_by",
+    ["Accuracy", "best_r2", "unknown"],
+)
+def test_main_dynamic_mode_rejects_invalid_sort_before_pipeline(
+    invalid_sort_by: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metric_specs = configurable_metric_specs()
+    monkeypatch.setattr(
+        compare_experiments,
+        "read_metric_specs_config",
+        lambda path: metric_specs,
+    )
+
+    def fail_if_called(*args: object, **kwargs: object) -> dict:
+        pytest.fail("pipeline must not run for an invalid dynamic sort field")
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fail_if_called,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^sort_by must be one of configured metric names: "
+            r"accuracy, validation_loss$"
+        ),
+    ):
+        compare_experiments.main(
+            [
+                "--metrics-config",
+                "configs/metrics.yaml",
+                "--sort-by",
+                invalid_sort_by,
+            ]
+        )
+
+
+def test_main_dynamic_mode_allows_configured_best_r2_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metric_specs = (
+        MetricSpec(
+            name="best_r2",
+            path=("validation", "metrics", "custom_r2"),
+            direction="maximize",
+            display_name="Custom R2",
+        ),
+    )
+    received: dict[str, object] = {}
+    monkeypatch.setattr(
+        compare_experiments,
+        "read_metric_specs_config",
+        lambda path: metric_specs,
+    )
+
+    def fake_pipeline(**kwargs: object) -> dict:
+        received.update(kwargs)
+        return _empty_cli_payload(
+            str(kwargs["sort_by"]),
+            bool(kwargs["descending"]),
+        )
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fake_pipeline,
+    )
+
+    compare_experiments.main(
+        [
+            "--metrics-config",
+            "configs/metrics.yaml",
+            "--sort-by",
+            "best_r2",
+        ]
+    )
+
+    assert received["sort_by"] == "best_r2"
+    assert received["metric_specs"] is metric_specs
+
+
+@pytest.mark.parametrize(
+    "expected_error",
+    [
+        FileNotFoundError("missing metrics config"),
+        yaml.YAMLError("invalid yaml"),
+        ValueError("definitions[0]: invalid metric"),
+    ],
+)
+def test_main_propagates_metrics_config_errors_without_running_pipeline(
+    expected_error: Exception,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_config_error(config_path: Path) -> tuple:
+        raise expected_error
+
+    def fail_if_called(*args: object, **kwargs: object) -> dict:
+        pytest.fail("pipeline must not run after a metrics config error")
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "read_metric_specs_config",
+        raise_config_error,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fail_if_called,
+    )
+
+    with pytest.raises(type(expected_error)) as error_info:
+        compare_experiments.main(
+            ["--metrics-config", "configs/metrics.yaml"]
+        )
+
+    assert error_info.value is expected_error
+
+
+def test_dynamic_metrics_cli_end_to_end_writes_ranked_json_and_markdown(
+    tmp_path: Path,
+) -> None:
+    experiment_root = tmp_path / "experiments"
+    experiment_a = experiment_root / "experiment_a"
+    experiment_b = experiment_root / "experiment_b"
+    experiment_a.mkdir(parents=True)
+    experiment_b.mkdir(parents=True)
+
+    for experiment_dir, losses in [
+        (experiment_a, [[0, 0.50], [1, 0.30]]),
+        (experiment_b, [[0, 0.40], [1, 0.20]]),
+    ]:
+        (experiment_dir / "hparams.yaml").write_text(
+            "batch_size: 8\n",
+            encoding="utf-8",
+        )
+        (experiment_dir / "history.json").write_text(
+            json.dumps(
+                {
+                    "validation": {
+                        "metrics": {
+                            "loss": losses,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    metrics_config = tmp_path / "metrics.yaml"
+    metrics_config.write_text(
+        """metrics:
+  - name: validation_loss
+    path:
+      - validation
+      - metrics
+      - loss
+    direction: minimize
+    display_name: Validation Loss
+    precision: 3
+""",
+        encoding="utf-8",
+    )
+    json_output = tmp_path / "reports" / "comparison.json"
+    markdown_output = tmp_path / "reports" / "comparison.md"
+
+    compare_experiments.main(
+        [
+            "--experiment-root",
+            str(experiment_root),
+            "--metrics-config",
+            str(metrics_config),
+            "--sort-by",
+            "validation_loss",
+            "--ascending",
+            "--output-path",
+            str(json_output),
+            "--markdown-output-path",
+            str(markdown_output),
+        ]
+    )
+
+    payload = json.loads(json_output.read_text(encoding="utf-8"))
+    markdown_text = markdown_output.read_text(encoding="utf-8")
+    assert payload["sort_by"] == "validation_loss"
+    assert payload["descending"] is False
+    assert payload["metric_specs"] == [
+        {
+            "name": "validation_loss",
+            "path": ["validation", "metrics", "loss"],
+            "direction": "minimize",
+            "display_name": "Validation Loss",
+            "precision": 3,
+        }
+    ]
+    assert payload["experiment_counts"] == {
+        "total": 2,
+        "successful": 2,
+        "failed": 0,
+    }
+    assert [
+        record["experiment_name"]
+        for record in payload["comparison_records"]
+    ] == ["experiment_b", "experiment_a"]
+    assert payload["comparison_records"][0]["metrics"][
+        "validation_loss"
+    ]["best_value"] == 0.2
+    assert "| Rank | Experiment | Directory | Validation Loss |" in markdown_text
+    assert "0.200 (epoch 1)" in markdown_text
+    assert markdown_text.index("experiment_b") < markdown_text.index(
+        "experiment_a"
+    )
