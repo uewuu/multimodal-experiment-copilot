@@ -1887,6 +1887,59 @@ def dynamic_batch_result() -> dict:
     }
 
 
+def dynamic_markdown_payload(
+    *,
+    metric_specs: list[dict] | None = None,
+    comparison_records: list[dict] | None = None,
+    failed_experiments: list[dict] | None = None,
+    sort_by: str = "accuracy",
+    descending: bool = True,
+) -> dict:
+    if metric_specs is None:
+        metric_specs = [
+            {
+                "name": "accuracy",
+                "path": ["validation", "metrics", "accuracy"],
+                "direction": "maximize",
+                "display_name": "Accuracy",
+                "precision": 4,
+            }
+        ]
+    if comparison_records is None:
+        comparison_records = [
+            {
+                "experiment_name": "experiment_a",
+                "experiment_dir": "experiments/a",
+                "metrics": {
+                    "accuracy": {
+                        "record_count": 3,
+                        "first_epoch": 0,
+                        "first_value": 0.5,
+                        "last_epoch": 20,
+                        "last_value": 0.8,
+                        "best_epoch": 12,
+                        "best_value": 0.91234,
+                    }
+                },
+            }
+        ]
+    if failed_experiments is None:
+        failed_experiments = []
+
+    return {
+        "sort_by": sort_by,
+        "descending": descending,
+        "metric_specs": metric_specs,
+        "experiment_counts": {
+            "total": len(comparison_records) + len(failed_experiments),
+            "successful": len(comparison_records),
+            "failed": len(failed_experiments),
+        },
+        "comparison_records": comparison_records,
+        "failed_experiments": failed_experiments,
+    }
+
+
 def test_default_comparison_records_schema_remains_unchanged() -> None:
     batch_result = {
         "successful_experiments": [
@@ -2477,53 +2530,348 @@ def test_dynamic_pipeline_passes_same_specs_to_analyze_and_payload(
     assert result is expected_payload
 
 
-def test_dynamic_pipeline_rejects_markdown_before_any_work(
+def test_dynamic_pipeline_writes_json_then_dynamic_markdown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    experiment_root = tmp_path / "experiments"
+    experiment_dir = experiment_root / "experiment_a"
+    create_required_files(experiment_dir)
+    specs = configurable_metric_specs()
+    received_specs: list[tuple[MetricSpec, ...]] = []
     calls: list[str] = []
+    real_write_json = compare_experiments.write_comparison_json
+    real_write_markdown = compare_experiments.write_comparison_markdown
 
-    def record_call(name: str):
-        def fake(*args: object, **kwargs: object) -> object:
-            calls.append(name)
-            return []
+    def fake_summary(**kwargs: object) -> dict:
+        received_specs.append(kwargs["metric_specs"])
+        return dynamic_successful_experiment("experiment_a", 0.8, 2)[
+            "summary"
+        ]
 
-        return fake
+    def track_json(payload: dict, path: Path) -> Path:
+        calls.append("json")
+        return real_write_json(payload, path)
+
+    def track_markdown(markdown_text: str, path: Path) -> Path:
+        calls.append("markdown")
+        return real_write_markdown(markdown_text, path)
 
     monkeypatch.setattr(
         compare_experiments,
-        "find_experiment_dirs",
-        record_call("find"),
-    )
-    monkeypatch.setattr(
-        compare_experiments,
-        "analyze_experiment_dirs",
-        record_call("analyze"),
+        "build_experiment_summary",
+        fake_summary,
     )
     monkeypatch.setattr(
         compare_experiments,
         "write_comparison_json",
-        record_call("json"),
+        track_json,
     )
     monkeypatch.setattr(
         compare_experiments,
         "write_comparison_markdown",
-        record_call("markdown"),
+        track_markdown,
     )
-    output_path = tmp_path / "not-created" / "comparison.json"
-    markdown_path = tmp_path / "not-created" / "comparison.md"
+    output_path = tmp_path / "outputs" / "comparison.json"
+    markdown_path = tmp_path / "outputs" / "comparison.md"
 
-    with pytest.raises(ValueError) as error_info:
-        run_comparison_pipeline(
-            tmp_path / "missing-root",
-            output_path,
-            sort_by="accuracy",
-            markdown_output_path=markdown_path,
-            metric_specs=configurable_metric_specs(),
+    payload = run_comparison_pipeline(
+        experiment_root,
+        output_path,
+        sort_by="accuracy",
+        markdown_output_path=markdown_path,
+        metric_specs=specs,
+    )
+
+    markdown_text = markdown_path.read_text(encoding="utf-8")
+    assert calls == ["json", "markdown"]
+    assert received_specs == [specs]
+    assert output_path.is_file()
+    assert json.loads(output_path.read_text(encoding="utf-8")) == payload
+    assert markdown_path.is_file()
+    assert "| Rank | Experiment | Directory | Accuracy | Validation Loss |" in (
+        markdown_text
+    )
+    assert "0.800 (epoch 1)" in markdown_text
+    assert "2.0000 (epoch 2)" in markdown_text
+    assert payload["metric_specs"][0]["name"] == "accuracy"
+
+
+def test_default_comparison_markdown_full_text_remains_unchanged() -> None:
+    payload = markdown_payload()
+    payload["experiment_counts"] = {
+        "total": 2,
+        "successful": 1,
+        "failed": 1,
+    }
+    payload["comparison_records"] = [
+        comparison_record("experiment_a", 0.9)
+    ]
+    payload["failed_experiments"] = [
+        {
+            "experiment_name": "broken",
+            "experiment_dir": "examples/broken",
+            "error_type": "ValueError",
+            "error_message": "invalid metric",
+        }
+    ]
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert markdown_text == (
+        "# Multi-experiment Comparison Report\n"
+        "\n"
+        "## Overview\n"
+        "\n"
+        "- Sort field: `best_r2`\n"
+        "- Sort direction: Descending\n"
+        "- Total experiments: 2\n"
+        "- Successful experiments: 1\n"
+        "- Failed experiments: 1\n"
+        "\n"
+        "## Ranked Experiments\n"
+        "\n"
+        "| Rank | Experiment | Directory | Best R² | R² Epoch | "
+        "Best RACC | RACC Epoch |\n"
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: |\n"
+        "| 1 | experiment_a | examples/experiment_a | 0.900000 | 2 | "
+        "0.900000 | 3 |\n"
+        "\n"
+        "## Failed Experiments\n"
+        "\n"
+        "| Experiment | Directory | Error Type | Error Message |\n"
+        "| --- | --- | --- | --- |\n"
+        "| broken | examples/broken | ValueError | invalid metric |\n"
+    )
+
+
+def test_dynamic_markdown_builds_single_metric_table_with_display_name() -> None:
+    markdown_text = build_comparison_markdown(dynamic_markdown_payload())
+
+    assert "| Rank | Experiment | Directory | Accuracy |" in markdown_text
+    assert "| ---: | --- | --- | ---: |" in markdown_text
+    assert (
+        "| 1 | experiment_a | experiments/a | 0.9123 (epoch 12) |"
+        in markdown_text
+    )
+    assert "| Rank | Experiment | Directory | accuracy |" not in markdown_text
+    assert "## Failed Experiments" not in markdown_text
+
+
+def test_dynamic_markdown_preserves_metric_order_and_separator_width() -> None:
+    metric_specs = [
+        {
+            "name": "validation_loss",
+            "path": ["validation", "loss"],
+            "direction": "minimize",
+            "display_name": "Validation Loss",
+            "precision": 2,
+        },
+        {
+            "name": "accuracy",
+            "path": ["validation", "accuracy"],
+            "direction": "maximize",
+            "display_name": "Accuracy",
+            "precision": 4,
+        },
+    ]
+    records = [
+        {
+            "experiment_name": "experiment_a",
+            "experiment_dir": "experiments/a",
+            "metrics": {
+                "accuracy": {"best_value": 0.91234, "best_epoch": 12},
+                "validation_loss": {"best_value": 0.245, "best_epoch": 18},
+            },
+        }
+    ]
+
+    markdown_text = build_comparison_markdown(
+        dynamic_markdown_payload(
+            metric_specs=metric_specs,
+            comparison_records=records,
+            sort_by="validation_loss",
         )
-
-    assert str(error_info.value) == (
-        "markdown output is not supported with configurable metrics yet"
     )
-    assert calls == []
-    assert not output_path.parent.exists()
+
+    assert (
+        "| Rank | Experiment | Directory | Validation Loss | Accuracy |"
+        in markdown_text
+    )
+    assert "| ---: | --- | --- | ---: | ---: |" in markdown_text
+    assert (
+        "| 1 | experiment_a | experiments/a | 0.24 (epoch 18) | "
+        "0.9123 (epoch 12) |"
+    ) in markdown_text
+
+
+@pytest.mark.parametrize(
+    ("precision", "expected_value"),
+    [
+        (0, "1"),
+        (2, "0.91"),
+        (4, "0.9123"),
+        (6, "0.912300"),
+    ],
+)
+def test_dynamic_markdown_formats_each_metric_with_its_precision(
+    precision: int,
+    expected_value: str,
+) -> None:
+    payload = dynamic_markdown_payload()
+    payload["metric_specs"][0]["precision"] = precision
+    payload["comparison_records"][0]["metrics"]["accuracy"][
+        "best_value"
+    ] = 0.9123
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert f"{expected_value} (epoch 12)" in markdown_text
+
+
+def test_dynamic_markdown_escapes_headers_experiments_and_directories() -> None:
+    payload = dynamic_markdown_payload()
+    payload["metric_specs"][0]["display_name"] = "Accuracy | Top-1"
+    payload["comparison_records"] = [
+        {
+            "experiment_name": "second|run",
+            "experiment_dir": "line1\nline2|dir",
+            "metrics": {
+                "accuracy": {"best_value": 0.8, "best_epoch": 3}
+            },
+        },
+        {
+            "experiment_name": "first",
+            "experiment_dir": "experiments/first",
+            "metrics": {
+                "accuracy": {"best_value": 0.9, "best_epoch": 4}
+            },
+        },
+    ]
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert "Accuracy \\| Top-1" in markdown_text
+    assert "| 1 | second\\|run | line1<br>line2\\|dir |" in markdown_text
+    assert "| 2 | first | experiments/first |" in markdown_text
+    assert markdown_text.index("second\\|run") < markdown_text.index("first")
+
+
+def test_dynamic_markdown_omits_unused_statistics_and_metadata() -> None:
+    markdown_text = build_comparison_markdown(dynamic_markdown_payload())
+
+    for omitted_text in [
+        "record_count",
+        "first_value",
+        "last_value",
+        "maximize",
+        "validation, metrics, accuracy",
+        "precision",
+    ]:
+        assert omitted_text not in markdown_text
+
+
+@pytest.mark.parametrize(
+    ("descending", "expected_direction"),
+    [(True, "Descending"), (False, "Ascending")],
+)
+def test_dynamic_markdown_keeps_sort_summary_semantics(
+    descending: bool,
+    expected_direction: str,
+) -> None:
+    markdown_text = build_comparison_markdown(
+        dynamic_markdown_payload(
+            sort_by="accuracy",
+            descending=descending,
+        )
+    )
+
+    assert "- Sort field: `accuracy`" in markdown_text
+    assert f"- Sort direction: {expected_direction}" in markdown_text
+
+
+def test_dynamic_markdown_reuses_failed_experiment_section() -> None:
+    failure = {
+        "experiment_name": "broken|run",
+        "experiment_dir": "experiments/broken",
+        "error_type": "ValueError",
+        "error_message": "invalid|metric",
+    }
+
+    markdown_text = build_comparison_markdown(
+        dynamic_markdown_payload(failed_experiments=[failure])
+    )
+
+    assert "## Failed Experiments" in markdown_text
+    assert (
+        "| broken\\|run | experiments/broken | ValueError | "
+        "invalid\\|metric |"
+    ) in markdown_text
+
+
+def test_dynamic_markdown_handles_all_failed_experiments() -> None:
+    failure = {
+        "experiment_name": "broken",
+        "experiment_dir": "experiments/broken",
+        "error_type": "ValueError",
+        "error_message": "invalid metric",
+    }
+
+    markdown_text = build_comparison_markdown(
+        dynamic_markdown_payload(
+            comparison_records=[],
+            failed_experiments=[failure],
+        )
+    )
+
+    assert isinstance(markdown_text, str)
+    assert "No successful experiments were analyzed." in markdown_text
+    assert "## Failed Experiments" in markdown_text
+    assert "| Rank | Experiment | Directory | Accuracy |" not in markdown_text
+    assert markdown_text.endswith("\n")
+    assert not markdown_text.endswith("\n\n")
+
+
+def test_dynamic_markdown_does_not_modify_payload() -> None:
+    payload = dynamic_markdown_payload()
+    original_payload = deepcopy(payload)
+
+    build_comparison_markdown(payload)
+
+    assert payload == original_payload
+
+
+@pytest.mark.parametrize(
+    ("missing_field", "expected_key"),
+    [
+        ("metadata_name", "name"),
+        ("metadata_display_name", "display_name"),
+        ("metadata_precision", "precision"),
+        ("record_metrics", "metrics"),
+        ("configured_metric", "accuracy"),
+        ("best_value", "best_value"),
+        ("best_epoch", "best_epoch"),
+    ],
+)
+def test_dynamic_markdown_propagates_key_error_for_damaged_payload(
+    missing_field: str,
+    expected_key: str,
+) -> None:
+    payload = dynamic_markdown_payload()
+    metadata = payload["metric_specs"][0]
+    record = payload["comparison_records"][0]
+    metric = record["metrics"]["accuracy"]
+
+    if missing_field.startswith("metadata_"):
+        del metadata[missing_field.removeprefix("metadata_")]
+    elif missing_field == "record_metrics":
+        del record["metrics"]
+    elif missing_field == "configured_metric":
+        del record["metrics"]["accuracy"]
+    else:
+        del metric[missing_field]
+
+    with pytest.raises(KeyError) as error_info:
+        build_comparison_markdown(payload)
+
+    assert error_info.value.args[0] == expected_key

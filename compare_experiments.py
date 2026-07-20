@@ -331,20 +331,63 @@ def build_comparison_markdown(payload: dict) -> str:
     ]
 
     if comparison_records:
-        report_lines.extend(
-            [
-                "| Rank | Experiment | Directory | Best R² | R² Epoch | Best RACC | RACC Epoch |",
-                "| ---: | --- | --- | ---: | ---: | ---: | ---: |",
+        if "metric_specs" in payload:
+            metric_specs = payload["metric_specs"]
+            header_cells = [
+                "Rank",
+                "Experiment",
+                "Directory",
+                *[
+                    _escape_markdown_cell(spec_metadata["display_name"])
+                    for spec_metadata in metric_specs
+                ],
             ]
-        )
-        for rank, record in enumerate(comparison_records, start=1):
-            report_lines.append(
-                "| "
-                f'{rank} | {_escape_markdown_cell(record["experiment_name"])} | '
-                f'{_escape_markdown_cell(record["experiment_dir"])} | '
-                f'{record["best_r2"]:.6f} | {record["best_r2_epoch"]} | '
-                f'{record["best_racc"]:.6f} | {record["best_racc_epoch"]} |'
+            separator_cells = [
+                "---:",
+                "---",
+                "---",
+                *["---:" for _ in metric_specs],
+            ]
+            report_lines.extend(
+                [
+                    "| " + " | ".join(header_cells) + " |",
+                    "| " + " | ".join(separator_cells) + " |",
+                ]
             )
+            for rank, record in enumerate(comparison_records, start=1):
+                metric_cells = []
+                for spec_metadata in metric_specs:
+                    metric = record["metrics"][spec_metadata["name"]]
+                    formatted_value = (
+                        f'{metric["best_value"]:.{spec_metadata["precision"]}f}'
+                    )
+                    metric_cells.append(
+                        f'{formatted_value} (epoch {metric["best_epoch"]})'
+                    )
+                row_cells = [
+                    str(rank),
+                    _escape_markdown_cell(record["experiment_name"]),
+                    _escape_markdown_cell(record["experiment_dir"]),
+                    *metric_cells,
+                ]
+                report_lines.append(
+                    "| " + " | ".join(row_cells) + " |"
+                )
+        else:
+            report_lines.extend(
+                [
+                    "| Rank | Experiment | Directory | Best R² | R² Epoch | Best RACC | RACC Epoch |",
+                    "| ---: | --- | --- | ---: | ---: | ---: | ---: |",
+                ]
+            )
+            for rank, record in enumerate(comparison_records, start=1):
+                report_lines.append(
+                    "| "
+                    f'{rank} | {_escape_markdown_cell(record["experiment_name"])} | '
+                    f'{_escape_markdown_cell(record["experiment_dir"])} | '
+                    f'{record["best_r2"]:.6f} | {record["best_r2_epoch"]} | '
+                    f'{record["best_racc"]:.6f} | {record["best_racc_epoch"]} |'
+                )
     else:
         report_lines.append("No successful experiments were analyzed.")
 
@@ -424,12 +467,6 @@ def run_comparison_pipeline(
     metric_specs: Sequence[MetricSpec] | None = None,
 ) -> dict:
     """总是写入 JSON，可选写入 Markdown，并返回实验对比载荷。"""
-    if metric_specs is not None and markdown_output_path is not None:
-        raise ValueError(
-            "markdown output is not supported "
-            "with configurable metrics yet"
-        )
-
     validated_metric_specs = (
         None
         if metric_specs is None
