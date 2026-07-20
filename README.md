@@ -6,6 +6,8 @@ generating structured JSON summaries and Markdown reports.
 
 中文名称：多模态实验分析智能体。
 
+项目定位：面向机器学习研发团队的通用实验分析与决策 Copilot。
+
 ## Overview
 
 Multimodal machine learning experiments often produce configuration files,
@@ -50,6 +52,9 @@ AI Agent, LLM application, RAG, and AI backend engineering roles.
 - Export UTF-8 JSON comparison results.
 - Generate a human-readable multi-experiment Markdown report.
 - Provide a configurable multi-experiment comparison CLI.
+- Define general experiment metrics in an independent YAML file.
+- Select per-experiment best values with `maximize` or `minimize` semantics.
+- Generate dynamic JSON and Markdown comparisons for configured metrics.
 - Cover the comparison workflow with automated pytest tests.
 - Validate the full pytest suite automatically with GitHub Actions.
 - Run CI with Python 3.11 on `ubuntu-latest`.
@@ -63,6 +68,8 @@ multimodal-experiment-copilot/
 ├── .github/
 │   └── workflows/
 │       └── tests.yml
+├── configs/
+│   └── metrics.example.yaml
 ├── examples/
 │   └── demo_experiment/
 │       ├── history.json
@@ -78,8 +85,10 @@ multimodal-experiment-copilot/
 ├── README.md
 ├── compare_experiments.py
 ├── generate_report.py
+├── metrics.py
 ├── read_config.py
 ├── read_history.py
+├── read_metrics_config.py
 ├── requirements.txt
 └── summarize_experiment.py
 ```
@@ -216,7 +225,8 @@ python compare_experiments.py `
 - `--experiment-root`：包含多个实验目录的根目录。
 - `--output-path`：JSON 输出文件路径。
 - `--markdown-output-path`：Markdown 对比报告输出路径。
-- `--sort-by`：排序字段，可选 `best_r2` 或 `best_racc`。
+- `--metrics-config`：独立指标 YAML 配置文件路径；提供时启用动态指标模式。
+- `--sort-by`：默认模式使用 `best_r2` 或 `best_racc`；动态模式使用配置中的指标 `name`。
 - `--ascending`：出现时使用升序；未出现时使用降序。
 
 ### JSON 输出结构
@@ -276,6 +286,200 @@ python -m pytest .\tests -v
 
 当前版本已使用上述命令完成本地测试验证。
 
+## Configurable Metrics / 可配置指标
+
+多实验比较支持显式加载通用指标定义。提供 `--metrics-config` 时，程序会从
+独立 YAML 文件读取指标，并为每个实验生成动态 JSON 记录和 Markdown 列；未提供
+该参数时，程序继续使用原有 R²/RACC 兼容模式。
+
+示例配置位于 [`configs/metrics.example.yaml`](configs/metrics.example.yaml)。
+
+### 默认兼容模式
+
+未提供 `--metrics-config` 时，默认比较字段仍为 `best_r2` 和 `best_racc`。
+默认排序为 `sort_by=best_r2`、`descending=True`，动态模式不会替代此行为。
+
+PowerShell：
+
+```powershell
+& "C:\Users\admin\.conda\envs\agent311\python.exe" `
+  .\compare_experiments.py `
+  --experiment-root .\examples `
+  --output-path .\outputs\comparison.json `
+  --markdown-output-path .\outputs\comparison.md `
+  --sort-by best_r2
+```
+
+也可以省略 `--sort-by`，此时仍使用 `best_r2`。默认 comparison record 结构为：
+
+```json
+{
+  "experiment_name": "experiment_a",
+  "experiment_dir": "examples/experiment_a",
+  "best_r2": 0.48,
+  "best_r2_epoch": 32,
+  "best_racc": 0.91,
+  "best_racc_epoch": 30
+}
+```
+
+默认 Markdown 排名表使用固定表头：
+
+```text
+| Rank | Experiment | Directory | Best R² | R² Epoch | Best RACC | RACC Epoch |
+```
+
+### 指标 YAML schema
+
+独立配置文件的顶层只能包含非空的 `metrics` 序列。例如：
+
+```yaml
+metrics:
+  - name: accuracy
+    path:
+      - validation
+      - metrics
+      - accuracy
+    direction: maximize
+    display_name: Accuracy
+    precision: 4
+
+  - name: validation_loss
+    path:
+      - validation
+      - metrics
+      - loss
+    direction: minimize
+    display_name: Validation Loss
+    precision: 6
+```
+
+每个指标包含以下字段：
+
+- `name`：稳定且唯一的指标标识符，用作 JSON key 和 `--sort-by` 值；它不是
+  Markdown 显示标题。
+- `path`：`history.json` 中指标历史序列的嵌套字符串键路径，YAML 中必须写成
+  字符串列表。每个被比较实验都必须在该路径提供指标历史。
+- `direction`：只允许 `maximize` 或 `minimize`，用于选择单个实验内部的
+  `best_value`。
+- `display_name`：Markdown 表头使用的可读文本，可以是中文，也可以包含需要
+  Markdown 转义的字符；不能用作 `--sort-by`。
+- `precision`：Markdown 中 `best_value` 的小数位数，默认为 `6`，必须是非负
+  整数；它不改变 JSON 原始数值，也不表示百分比。
+
+例如：
+
+```yaml
+path:
+  - validation
+  - metrics
+  - accuracy
+```
+
+对应：
+
+```python
+history["validation"]["metrics"]["accuracy"]
+```
+
+`path` 不支持点号字符串、JSONPath、通配符、数组索引、自动搜索或指标发现。
+
+`maximize` 表示在单个实验的历史记录中选择最大值；`minimize` 表示选择最小值。
+`direction` 只控制实验内部的最佳值选择，不会自动决定跨实验排序方向。
+
+### 动态 CLI
+
+PowerShell：
+
+```powershell
+& "C:\Users\admin\.conda\envs\agent311\python.exe" `
+  .\compare_experiments.py `
+  --experiment-root .\examples `
+  --metrics-config .\configs\metrics.example.yaml `
+  --sort-by validation_loss `
+  --ascending `
+  --output-path .\outputs\comparison.json `
+  --markdown-output-path .\outputs\comparison.md
+```
+
+- `--metrics-config` 启用动态指标模式。
+- `--sort-by` 必须使用配置中的 `name`，不能使用 `display_name`。
+- `--ascending` 表示跨实验按所选指标的 `best_value` 从小到大排序；未提供时
+  从大到小排序。
+- `direction=minimize` 不会自动启用升序。比较 loss 时通常需要显式添加
+  `--ascending`。
+- 动态模式省略 `--sort-by` 时，使用 YAML 中第一个指标的 `name`。
+
+### 动态 JSON 输出
+
+以下是省略 `experiment_counts` 和 `failed_experiments` 的精简 payload 示例：
+
+```json
+{
+  "sort_by": "validation_loss",
+  "descending": false,
+  "metric_specs": [
+    {
+      "name": "validation_loss",
+      "path": [
+        "validation",
+        "metrics",
+        "loss"
+      ],
+      "direction": "minimize",
+      "display_name": "Validation Loss",
+      "precision": 6
+    }
+  ],
+  "comparison_records": [
+    {
+      "experiment_name": "experiment_a",
+      "experiment_dir": "examples/experiment_a",
+      "metrics": {
+        "validation_loss": {
+          "record_count": 20,
+          "first_epoch": 0,
+          "first_value": 0.8,
+          "last_epoch": 19,
+          "last_value": 0.25,
+          "best_epoch": 18,
+          "best_value": 0.24
+        }
+      }
+    }
+  ]
+}
+```
+
+JSON 保留指标历史评估结果中的记录数量、首尾值和最佳值，不受 `precision`
+格式化影响。
+
+### 动态 Markdown 输出
+
+动态 Markdown 为 YAML 中每个指标生成一列，表头使用 `display_name`，列顺序与
+`metrics` 顺序一致。单元格格式为 `<best_value> (epoch <best_epoch>)`，小数
+位数由 `precision` 控制。例如：
+
+```text
+| Rank | Experiment | Directory | Validation Loss |
+| ---: | --- | --- | ---: |
+| 1 | experiment_a | examples/experiment_a | 0.240000 (epoch 18) |
+```
+
+`comparison_records` 的已有排序顺序直接用于 Rank。Markdown 不展示
+`first_value`、`last_value` 或 `record_count`。
+
+### 配置错误与当前限制
+
+- YAML 顶层只能包含 `metrics`，且 `metrics` 必须是非空序列。
+- 同一配置中的指标 `name` 必须唯一。
+- `path` 必须与实际 `history.json` 一致；所有被比较实验都应提供配置中的指标
+  路径。单个实验缺少路径时会作为失败实验隔离记录。
+- 动态 `--sort-by` 必须使用配置中的 `name`；默认模式只允许 `best_r2` 或
+  `best_racc`。
+- 当前不支持 JSONPath、自动发现指标、由 `direction` 自动决定跨实验排序、
+  图表生成或 Web UI。
+
 ## Generated Outputs
 
 ### Single-experiment report
@@ -313,7 +517,8 @@ The comparison JSON contains:
 The human-readable Markdown report contains:
 
 1. An overview of sorting and experiment counts.
-2. A ranked experiment table with best R² and RACC values and epochs.
+2. A ranked experiment table with best R² and RACC values and epochs in
+   default mode, or configured metric columns in dynamic mode.
 3. A failed-experiment table when failures are present.
 
 ## Example Analysis
@@ -376,6 +581,7 @@ The complete evolution is available in the repository commit history.
 - [x] Multi-experiment batch analysis
 - [x] Experiment comparison tables
 - [x] Multi-experiment Markdown comparison report
+- [x] Configurable experiment metrics from YAML
 - [ ] Trait-wise metric summaries
 - [ ] Configuration and schema validation
 - [x] Automated tests with `pytest`

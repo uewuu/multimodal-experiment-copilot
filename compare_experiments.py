@@ -1,9 +1,12 @@
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
+from metrics import MetricSpec
 from read_config import CONFIG_PATH
 from read_history import HISTORY_PATH
+from read_metrics_config import read_metric_specs_config
 from summarize_experiment import build_experiment_summary
 
 
@@ -22,6 +25,76 @@ SORTABLE_COMPARISON_FIELDS = {
     "best_r2",
     "best_racc",
 }
+
+
+def _validate_metric_specs(
+    metric_specs: Sequence[MetricSpec],
+) -> tuple[MetricSpec, ...]:
+    if (
+        isinstance(metric_specs, (str, bytes, bytearray))
+        or not isinstance(metric_specs, Sequence)
+    ):
+        raise TypeError("metric_specs must be a sequence")
+    if not metric_specs:
+        raise ValueError("metric_specs must not be empty")
+
+    validated_specs: list[MetricSpec] = []
+    name_indexes: dict[str, int] = {}
+
+    for index, spec in enumerate(metric_specs):
+        if not isinstance(spec, MetricSpec):
+            raise TypeError(
+                f"metric_specs[{index}] must be a MetricSpec"
+            )
+
+        if spec.name in name_indexes:
+            first_index = name_indexes[spec.name]
+            raise ValueError(
+                "duplicate metric name "
+                f"'{spec.name}' at metric_specs[{index}]; "
+                f"first defined at metric_specs[{first_index}]"
+            )
+
+        name_indexes[spec.name] = index
+        validated_specs.append(spec)
+
+    if isinstance(metric_specs, tuple):
+        return metric_specs
+    return tuple(validated_specs)
+
+
+def _resolve_default_sort_by(
+    requested_sort_by: str | None,
+) -> str:
+    resolved_sort_by = (
+        requested_sort_by
+        if requested_sort_by is not None
+        else "best_r2"
+    )
+    allowed_fields = ("best_r2", "best_racc")
+    if resolved_sort_by not in SORTABLE_COMPARISON_FIELDS:
+        raise ValueError(
+            "sort_by must be one of: " + ", ".join(allowed_fields)
+        )
+    return resolved_sort_by
+
+
+def _resolve_dynamic_sort_by(
+    requested_sort_by: str | None,
+    metric_specs: Sequence[MetricSpec],
+) -> str:
+    metric_names = tuple(spec.name for spec in metric_specs)
+    resolved_sort_by = (
+        requested_sort_by
+        if requested_sort_by is not None
+        else metric_names[0]
+    )
+    if resolved_sort_by not in metric_names:
+        raise ValueError(
+            "sort_by must be one of configured metric names: "
+            + ", ".join(metric_names)
+        )
+    return resolved_sort_by
 
 
 def find_experiment_dirs(root_dir: Path) -> list[Path]:
@@ -53,8 +126,14 @@ def find_experiment_dirs(root_dir: Path) -> list[Path]:
 
 def analyze_experiment_dirs(
     experiment_dirs: list[Path],
+    metric_specs: Sequence[MetricSpec] | None = None,
 ) -> dict:
     """按传入顺序分析实验目录并收集成功与失败结果。"""
+    validated_metric_specs = (
+        None
+        if metric_specs is None
+        else _validate_metric_specs(metric_specs)
+    )
     successful_experiments: list[dict] = []
     failed_experiments: list[dict] = []
 
@@ -63,10 +142,17 @@ def analyze_experiment_dirs(
         history_path = experiment_dir / HISTORY_FILENAME
 
         try:
-            summary = build_experiment_summary(
-                config_path=config_path,
-                history_path=history_path,
-            )
+            if validated_metric_specs is None:
+                summary = build_experiment_summary(
+                    config_path=config_path,
+                    history_path=history_path,
+                )
+            else:
+                summary = build_experiment_summary(
+                    config_path=config_path,
+                    history_path=history_path,
+                    metric_specs=validated_metric_specs,
+                )
         except Exception as error:
             failed_experiments.append(
                 {
@@ -94,20 +180,49 @@ def analyze_experiment_dirs(
 
 def build_comparison_records(
     batch_result: dict,
+    metric_specs: Sequence[MetricSpec] | None = None,
 ) -> list[dict]:
     """从成功实验摘要中构建统一的实验对比记录。"""
+    validated_metric_specs = (
+        None
+        if metric_specs is None
+        else _validate_metric_specs(metric_specs)
+    )
     comparison_records: list[dict] = []
 
     for experiment in batch_result["successful_experiments"]:
         metrics = experiment["summary"]["validation_metrics"]
+        if validated_metric_specs is None:
+            comparison_records.append(
+                {
+                    "experiment_name": experiment["experiment_name"],
+                    "experiment_dir": experiment["experiment_dir"],
+                    "best_r2": metrics["r2"]["best_value"],
+                    "best_r2_epoch": metrics["r2"]["best_epoch"],
+                    "best_racc": metrics["racc"]["best_value"],
+                    "best_racc_epoch": metrics["racc"]["best_epoch"],
+                }
+            )
+            continue
+
+        dynamic_metrics: dict[str, dict] = {}
+        for spec in validated_metric_specs:
+            metric = metrics[spec.name]
+            dynamic_metrics[spec.name] = {
+                "record_count": metric["record_count"],
+                "first_epoch": metric["first_epoch"],
+                "first_value": metric["first_value"],
+                "last_epoch": metric["last_epoch"],
+                "last_value": metric["last_value"],
+                "best_epoch": metric["best_epoch"],
+                "best_value": metric["best_value"],
+            }
+
         comparison_records.append(
             {
                 "experiment_name": experiment["experiment_name"],
                 "experiment_dir": experiment["experiment_dir"],
-                "best_r2": metrics["r2"]["best_value"],
-                "best_r2_epoch": metrics["r2"]["best_epoch"],
-                "best_racc": metrics["racc"]["best_value"],
-                "best_racc_epoch": metrics["racc"]["best_epoch"],
+                "metrics": dynamic_metrics,
             }
         )
 
@@ -118,18 +233,32 @@ def rank_comparison_records(
     comparison_records: list[dict],
     sort_by: str = "best_r2",
     descending: bool = True,
+    metric_specs: Sequence[MetricSpec] | None = None,
 ) -> list[dict]:
     """按指定指标对实验对比记录进行稳定排序。"""
-    if sort_by not in SORTABLE_COMPARISON_FIELDS:
-        available_fields = ", ".join(sorted(SORTABLE_COMPARISON_FIELDS))
-        raise ValueError(
-            f"不支持的排序字段：{sort_by}；"
-            f"可用字段：{available_fields}"
+    if metric_specs is None:
+        if sort_by not in SORTABLE_COMPARISON_FIELDS:
+            available_fields = ", ".join(sorted(SORTABLE_COMPARISON_FIELDS))
+            raise ValueError(
+                f"不支持的排序字段：{sort_by}；"
+                f"可用字段：{available_fields}"
+            )
+        sort_key = lambda record: record[sort_by]
+    else:
+        validated_metric_specs = _validate_metric_specs(metric_specs)
+        metric_names = tuple(
+            spec.name for spec in validated_metric_specs
         )
+        if sort_by not in metric_names:
+            raise ValueError(
+                "sort_by must be one of configured metric names: "
+                + ", ".join(metric_names)
+            )
+        sort_key = lambda record: record["metrics"][sort_by]["best_value"]
 
     return sorted(
         comparison_records,
-        key=lambda record: record[sort_by],
+        key=sort_key,
         reverse=descending,
     )
 
@@ -138,14 +267,39 @@ def build_comparison_payload(
     batch_result: dict,
     sort_by: str = "best_r2",
     descending: bool = True,
+    metric_specs: Sequence[MetricSpec] | None = None,
 ) -> dict:
     """构建包含排序记录、实验数量和失败信息的对比载荷。"""
-    comparison_records = build_comparison_records(batch_result)
-    ranked_records = rank_comparison_records(
-        comparison_records,
-        sort_by=sort_by,
-        descending=descending,
-    )
+    if metric_specs is None:
+        comparison_records = build_comparison_records(batch_result)
+        ranked_records = rank_comparison_records(
+            comparison_records,
+            sort_by=sort_by,
+            descending=descending,
+        )
+        serialized_metric_specs = None
+    else:
+        validated_metric_specs = _validate_metric_specs(metric_specs)
+        comparison_records = build_comparison_records(
+            batch_result,
+            metric_specs=validated_metric_specs,
+        )
+        ranked_records = rank_comparison_records(
+            comparison_records,
+            sort_by=sort_by,
+            descending=descending,
+            metric_specs=validated_metric_specs,
+        )
+        serialized_metric_specs = [
+            {
+                "name": spec.name,
+                "path": list(spec.path),
+                "direction": spec.direction,
+                "display_name": spec.display_name,
+                "precision": spec.precision,
+            }
+            for spec in validated_metric_specs
+        ]
 
     successful_count = len(
         batch_result["successful_experiments"]
@@ -155,7 +309,7 @@ def build_comparison_payload(
     )
     total_count = successful_count + failed_count
 
-    return {
+    payload = {
         "sort_by": sort_by,
         "descending": descending,
         "experiment_counts": {
@@ -165,6 +319,18 @@ def build_comparison_payload(
         },
         "comparison_records": ranked_records,
         "failed_experiments": batch_result["failed_experiments"],
+    }
+
+    if serialized_metric_specs is None:
+        return payload
+
+    return {
+        "sort_by": payload["sort_by"],
+        "descending": payload["descending"],
+        "metric_specs": serialized_metric_specs,
+        "experiment_counts": payload["experiment_counts"],
+        "comparison_records": payload["comparison_records"],
+        "failed_experiments": payload["failed_experiments"],
     }
 
 
@@ -200,20 +366,63 @@ def build_comparison_markdown(payload: dict) -> str:
     ]
 
     if comparison_records:
-        report_lines.extend(
-            [
-                "| Rank | Experiment | Directory | Best R² | R² Epoch | Best RACC | RACC Epoch |",
-                "| ---: | --- | --- | ---: | ---: | ---: | ---: |",
+        if "metric_specs" in payload:
+            metric_specs = payload["metric_specs"]
+            header_cells = [
+                "Rank",
+                "Experiment",
+                "Directory",
+                *[
+                    _escape_markdown_cell(spec_metadata["display_name"])
+                    for spec_metadata in metric_specs
+                ],
             ]
-        )
-        for rank, record in enumerate(comparison_records, start=1):
-            report_lines.append(
-                "| "
-                f'{rank} | {_escape_markdown_cell(record["experiment_name"])} | '
-                f'{_escape_markdown_cell(record["experiment_dir"])} | '
-                f'{record["best_r2"]:.6f} | {record["best_r2_epoch"]} | '
-                f'{record["best_racc"]:.6f} | {record["best_racc_epoch"]} |'
+            separator_cells = [
+                "---:",
+                "---",
+                "---",
+                *["---:" for _ in metric_specs],
+            ]
+            report_lines.extend(
+                [
+                    "| " + " | ".join(header_cells) + " |",
+                    "| " + " | ".join(separator_cells) + " |",
+                ]
             )
+            for rank, record in enumerate(comparison_records, start=1):
+                metric_cells = []
+                for spec_metadata in metric_specs:
+                    metric = record["metrics"][spec_metadata["name"]]
+                    formatted_value = (
+                        f'{metric["best_value"]:.{spec_metadata["precision"]}f}'
+                    )
+                    metric_cells.append(
+                        f'{formatted_value} (epoch {metric["best_epoch"]})'
+                    )
+                row_cells = [
+                    str(rank),
+                    _escape_markdown_cell(record["experiment_name"]),
+                    _escape_markdown_cell(record["experiment_dir"]),
+                    *metric_cells,
+                ]
+                report_lines.append(
+                    "| " + " | ".join(row_cells) + " |"
+                )
+        else:
+            report_lines.extend(
+                [
+                    "| Rank | Experiment | Directory | Best R² | R² Epoch | Best RACC | RACC Epoch |",
+                    "| ---: | --- | --- | ---: | ---: | ---: | ---: |",
+                ]
+            )
+            for rank, record in enumerate(comparison_records, start=1):
+                report_lines.append(
+                    "| "
+                    f'{rank} | {_escape_markdown_cell(record["experiment_name"])} | '
+                    f'{_escape_markdown_cell(record["experiment_dir"])} | '
+                    f'{record["best_r2"]:.6f} | {record["best_r2_epoch"]} | '
+                    f'{record["best_racc"]:.6f} | {record["best_racc_epoch"]} |'
+                )
     else:
         report_lines.append("No successful experiments were analyzed.")
 
@@ -290,19 +499,37 @@ def run_comparison_pipeline(
     sort_by: str = "best_r2",
     descending: bool = True,
     markdown_output_path: Path | None = None,
+    metric_specs: Sequence[MetricSpec] | None = None,
 ) -> dict:
     """总是写入 JSON，可选写入 Markdown，并返回实验对比载荷。"""
+    validated_metric_specs = (
+        None
+        if metric_specs is None
+        else _validate_metric_specs(metric_specs)
+    )
     experiment_dirs = find_experiment_dirs(
         experiment_root
     )
-    batch_result = analyze_experiment_dirs(
-        experiment_dirs
-    )
-    payload = build_comparison_payload(
-        batch_result,
-        sort_by=sort_by,
-        descending=descending,
-    )
+    if validated_metric_specs is None:
+        batch_result = analyze_experiment_dirs(
+            experiment_dirs
+        )
+        payload = build_comparison_payload(
+            batch_result,
+            sort_by=sort_by,
+            descending=descending,
+        )
+    else:
+        batch_result = analyze_experiment_dirs(
+            experiment_dirs,
+            metric_specs=validated_metric_specs,
+        )
+        payload = build_comparison_payload(
+            batch_result,
+            sort_by=sort_by,
+            descending=descending,
+            metric_specs=validated_metric_specs,
+        )
     write_comparison_json(
         payload,
         output_path,
@@ -344,10 +571,19 @@ def parse_args(
         help="Markdown 对比报告输出路径",
     )
     parser.add_argument(
+        "--metrics-config",
+        type=Path,
+        default=None,
+        help="独立指标 YAML 配置文件路径",
+    )
+    parser.add_argument(
         "--sort-by",
-        choices=sorted(SORTABLE_COMPARISON_FIELDS),
-        default="best_r2",
-        help="实验对比记录的排序指标",
+        type=str,
+        default=None,
+        help=(
+            "排序字段。默认模式未指定时使用 best_r2；"
+            "动态指标模式未指定时使用配置中的第一个指标"
+        ),
     )
     parser.add_argument(
         "--ascending",
@@ -363,14 +599,34 @@ def main(
 ) -> None:
     args = parse_args(argv)
 
-    try:
-        payload = run_comparison_pipeline(
-            experiment_root=args.experiment_root,
-            output_path=args.output_path,
-            sort_by=args.sort_by,
-            descending=not args.ascending,
-            markdown_output_path=args.markdown_output_path,
+    metric_specs = None
+    if args.metrics_config is None:
+        resolved_sort_by = _resolve_default_sort_by(args.sort_by)
+    else:
+        metric_specs = read_metric_specs_config(args.metrics_config)
+        resolved_sort_by = _resolve_dynamic_sort_by(
+            args.sort_by,
+            metric_specs,
         )
+
+    try:
+        if metric_specs is None:
+            payload = run_comparison_pipeline(
+                experiment_root=args.experiment_root,
+                output_path=args.output_path,
+                sort_by=resolved_sort_by,
+                descending=not args.ascending,
+                markdown_output_path=args.markdown_output_path,
+            )
+        else:
+            payload = run_comparison_pipeline(
+                experiment_root=args.experiment_root,
+                output_path=args.output_path,
+                sort_by=resolved_sort_by,
+                descending=not args.ascending,
+                markdown_output_path=args.markdown_output_path,
+                metric_specs=metric_specs,
+            )
     except (FileNotFoundError, NotADirectoryError) as error:
         raise SystemExit(
             f"实验比较失败：{error}"
