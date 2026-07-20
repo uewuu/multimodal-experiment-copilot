@@ -1,9 +1,11 @@
+import json
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 import compare_experiments
+from metrics import MetricSpec
 from compare_experiments import (
     DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH,
     DEFAULT_COMPARISON_OUTPUT_PATH,
@@ -1805,3 +1807,723 @@ def test_parse_args_help_describes_markdown_output_path(
     assert error_info.value.code == 0
     assert "--markdown-output-path" in captured.out
     assert "Markdown 对比报告输出路径" in captured.out
+
+
+def configurable_metric_specs() -> tuple[MetricSpec, ...]:
+    return (
+        MetricSpec(
+            name="accuracy",
+            path=("validation", "metrics", "accuracy"),
+            direction="maximize",
+            display_name="Accuracy",
+            precision=3,
+        ),
+        MetricSpec(
+            name="validation_loss",
+            path=("validation", "metrics", "loss"),
+            direction="minimize",
+            display_name="Validation Loss",
+            precision=4,
+        ),
+    )
+
+
+def dynamic_metric_summary(
+    name: str,
+    best_value: int | float,
+    best_epoch: int,
+) -> dict:
+    return {
+        "metric_name": name,
+        "record_count": 3,
+        "first_epoch": 0,
+        "first_value": best_value,
+        "last_epoch": 2,
+        "last_value": best_value,
+        "best_epoch": best_epoch,
+        "best_value": best_value,
+    }
+
+
+def dynamic_successful_experiment(
+    name: str,
+    accuracy: int | float,
+    validation_loss: int | float,
+) -> dict:
+    return {
+        "experiment_name": name,
+        "experiment_dir": f"experiments/{name}",
+        "summary": {
+            "validation_metrics": {
+                "accuracy": dynamic_metric_summary(
+                    "accuracy",
+                    accuracy,
+                    1,
+                ),
+                "validation_loss": dynamic_metric_summary(
+                    "validation_loss",
+                    validation_loss,
+                    2,
+                ),
+            }
+        },
+    }
+
+
+def dynamic_batch_result() -> dict:
+    return {
+        "successful_experiments": [
+            dynamic_successful_experiment("experiment_a", 0.8, 2),
+            dynamic_successful_experiment("experiment_b", 0.9, 1),
+        ],
+        "failed_experiments": [
+            {
+                "experiment_name": "broken",
+                "experiment_dir": "experiments/broken",
+                "error_type": "ValueError",
+                "error_message": "invalid history",
+            }
+        ],
+    }
+
+
+def test_default_comparison_records_schema_remains_unchanged() -> None:
+    batch_result = {
+        "successful_experiments": [
+            make_successful_experiment("experiment_a", 0.7, 0.93)
+        ],
+        "failed_experiments": [],
+    }
+
+    record = build_comparison_records(batch_result)[0]
+
+    assert list(record) == [
+        "experiment_name",
+        "experiment_dir",
+        "best_r2",
+        "best_r2_epoch",
+        "best_racc",
+        "best_racc_epoch",
+    ]
+
+
+def test_default_comparison_payload_schema_remains_unchanged() -> None:
+    payload = build_comparison_payload(
+        {"successful_experiments": [], "failed_experiments": []}
+    )
+
+    assert list(payload) == [
+        "sort_by",
+        "descending",
+        "experiment_counts",
+        "comparison_records",
+        "failed_experiments",
+    ]
+    assert "metric_specs" not in payload
+
+
+def test_default_payload_helpers_keep_legacy_call_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_result = {"successful_experiments": [], "failed_experiments": []}
+    records: list[dict] = []
+    calls: list[tuple] = []
+
+    def fake_records(result: dict) -> list[dict]:
+        calls.append(("records", result))
+        return records
+
+    def fake_rank(
+        received_records: list[dict],
+        *,
+        sort_by: str,
+        descending: bool,
+    ) -> list[dict]:
+        calls.append(("rank", received_records, sort_by, descending))
+        return received_records
+
+    monkeypatch.setattr(compare_experiments, "build_comparison_records", fake_records)
+    monkeypatch.setattr(compare_experiments, "rank_comparison_records", fake_rank)
+
+    build_comparison_payload(batch_result)
+
+    assert calls == [
+        ("records", batch_result),
+        ("rank", records, "best_r2", True),
+    ]
+
+
+def test_analyze_default_mode_omits_metric_specs_keyword(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment_dir = tmp_path / "experiment"
+    experiment_dir.mkdir()
+
+    def fake_summary(*, config_path: Path, history_path: Path) -> dict:
+        return {}
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_experiment_summary",
+        fake_summary,
+    )
+
+    result = analyze_experiment_dirs([experiment_dir])
+
+    assert len(result["successful_experiments"]) == 1
+
+
+def test_analyze_dynamic_mode_passes_ordered_specs_to_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment_dirs = [tmp_path / "experiment_a", tmp_path / "experiment_b"]
+    for experiment_dir in experiment_dirs:
+        experiment_dir.mkdir()
+    specs = configurable_metric_specs()
+    received: list[tuple[MetricSpec, ...]] = []
+
+    def fake_summary(**kwargs: object) -> dict:
+        received.append(kwargs["metric_specs"])
+        return {"validation_metrics": {}}
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_experiment_summary",
+        fake_summary,
+    )
+
+    analyze_experiment_dirs(experiment_dirs, metric_specs=specs)
+
+    assert received == [specs, specs]
+    assert received[0] is specs
+    assert received[1] is specs
+    assert [spec.name for spec in received[0]] == [
+        "accuracy",
+        "validation_loss",
+    ]
+
+
+def test_analyze_dynamic_failure_does_not_interrupt_other_experiments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed_dir = tmp_path / "failed"
+    successful_dir = tmp_path / "successful"
+    failed_dir.mkdir()
+    successful_dir.mkdir()
+
+    def build_or_fail(**kwargs: object) -> dict:
+        if kwargs["config_path"].parent == failed_dir:
+            raise ValueError("invalid metric")
+        return {"validation_metrics": {}}
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_experiment_summary",
+        build_or_fail,
+    )
+
+    result = analyze_experiment_dirs(
+        [failed_dir, successful_dir],
+        metric_specs=configurable_metric_specs(),
+    )
+
+    assert [
+        item["experiment_name"]
+        for item in result["successful_experiments"]
+    ] == ["successful"]
+    assert result["failed_experiments"][0]["error_message"] == (
+        "invalid metric"
+    )
+
+
+def test_analyze_dynamic_mode_records_all_experiments_as_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment_dirs = [tmp_path / "a", tmp_path / "b"]
+    for experiment_dir in experiment_dirs:
+        experiment_dir.mkdir()
+
+    def fail(**kwargs: object) -> dict:
+        raise RuntimeError("analysis failed")
+
+    monkeypatch.setattr(compare_experiments, "build_experiment_summary", fail)
+
+    result = analyze_experiment_dirs(
+        experiment_dirs,
+        metric_specs=configurable_metric_specs(),
+    )
+
+    assert result["successful_experiments"] == []
+    assert [item["experiment_name"] for item in result["failed_experiments"]] == [
+        "a",
+        "b",
+    ]
+
+
+@pytest.mark.parametrize(
+    "metric_specs",
+    ["metrics", b"metrics", bytearray(b"metrics"), 1, {}, iter(())],
+    ids=["string", "bytes", "bytearray", "integer", "mapping", "iterator"],
+)
+def test_dynamic_comparison_rejects_invalid_metric_specs_container(
+    metric_specs,
+) -> None:
+    with pytest.raises(TypeError) as error_info:
+        analyze_experiment_dirs([], metric_specs=metric_specs)
+
+    assert str(error_info.value) == "metric_specs must be a sequence"
+
+
+def test_dynamic_comparison_rejects_empty_metric_specs() -> None:
+    with pytest.raises(ValueError) as error_info:
+        analyze_experiment_dirs([], metric_specs=[])
+
+    assert str(error_info.value) == "metric_specs must not be empty"
+
+
+def test_analyze_invalid_specs_fail_before_processing_experiments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment_dir = tmp_path / "experiment"
+    experiment_dir.mkdir()
+    summary_called = False
+
+    def fake_summary(**kwargs: object) -> dict:
+        nonlocal summary_called
+        summary_called = True
+        return {}
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_experiment_summary",
+        fake_summary,
+    )
+
+    with pytest.raises(TypeError):
+        analyze_experiment_dirs([experiment_dir], metric_specs=[None])
+
+    assert summary_called is False
+
+
+def test_dynamic_comparison_rejects_invalid_metric_spec_member() -> None:
+    with pytest.raises(TypeError) as error_info:
+        analyze_experiment_dirs([], metric_specs=[configurable_metric_specs()[0], None])
+
+    assert str(error_info.value) == (
+        "metric_specs[1] must be a MetricSpec"
+    )
+
+
+def test_dynamic_comparison_rejects_duplicate_metric_name() -> None:
+    spec = configurable_metric_specs()[0]
+
+    with pytest.raises(ValueError) as error_info:
+        analyze_experiment_dirs([], metric_specs=[spec, spec])
+
+    assert str(error_info.value) == (
+        "duplicate metric name 'accuracy' at metric_specs[1]; "
+        "first defined at metric_specs[0]"
+    )
+
+
+def test_dynamic_metric_specs_are_not_modified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    specs = list(configurable_metric_specs())
+    original_specs = deepcopy(specs)
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_experiment_summary",
+        lambda **kwargs: {},
+    )
+
+    analyze_experiment_dirs([], metric_specs=specs)
+
+    assert specs == original_specs
+
+
+def test_dynamic_records_build_single_nested_metric() -> None:
+    spec = configurable_metric_specs()[0]
+    batch_result = {
+        "successful_experiments": [
+            dynamic_successful_experiment("experiment_a", 0.8, 2)
+        ],
+        "failed_experiments": [],
+    }
+
+    record = build_comparison_records(batch_result, metric_specs=[spec])[0]
+
+    assert record == {
+        "experiment_name": "experiment_a",
+        "experiment_dir": "experiments/experiment_a",
+        "metrics": {
+            "accuracy": {
+                "record_count": 3,
+                "first_epoch": 0,
+                "first_value": 0.8,
+                "last_epoch": 2,
+                "last_value": 0.8,
+                "best_epoch": 1,
+                "best_value": 0.8,
+            }
+        },
+    }
+
+
+def test_dynamic_records_preserve_field_metric_and_statistic_order() -> None:
+    records = build_comparison_records(
+        dynamic_batch_result(),
+        metric_specs=configurable_metric_specs(),
+    )
+    record = records[0]
+
+    assert list(record) == ["experiment_name", "experiment_dir", "metrics"]
+    assert list(record["metrics"]) == ["accuracy", "validation_loss"]
+    assert list(record["metrics"]["accuracy"]) == [
+        "record_count",
+        "first_epoch",
+        "first_value",
+        "last_epoch",
+        "last_value",
+        "best_epoch",
+        "best_value",
+    ]
+    assert not {
+        "metric_name",
+        "display_name",
+        "direction",
+        "path",
+        "precision",
+    } & set(record["metrics"]["accuracy"])
+    assert isinstance(record["metrics"]["accuracy"]["best_value"], float)
+    assert isinstance(record["metrics"]["validation_loss"]["best_value"], int)
+
+
+def test_dynamic_records_do_not_modify_batch_result() -> None:
+    batch_result = dynamic_batch_result()
+    original_batch_result = deepcopy(batch_result)
+
+    build_comparison_records(
+        batch_result,
+        metric_specs=configurable_metric_specs(),
+    )
+
+    assert batch_result == original_batch_result
+
+
+@pytest.mark.parametrize(
+    ("missing_key", "expected_key"),
+    [("metric", "accuracy"), ("field", "best_value")],
+)
+def test_dynamic_records_propagate_missing_key_error(
+    missing_key: str,
+    expected_key: str,
+) -> None:
+    batch_result = dynamic_batch_result()
+    metrics = batch_result["successful_experiments"][0]["summary"][
+        "validation_metrics"
+    ]
+    if missing_key == "metric":
+        del metrics["accuracy"]
+    else:
+        del metrics["accuracy"]["best_value"]
+
+    with pytest.raises(KeyError) as error_info:
+        build_comparison_records(
+            batch_result,
+            metric_specs=[configurable_metric_specs()[0]],
+        )
+
+    assert error_info.value.args[0] == expected_key
+
+
+@pytest.mark.parametrize(
+    ("sort_by", "descending", "expected_names"),
+    [
+        ("accuracy", True, ["experiment_b", "experiment_a"]),
+        ("accuracy", False, ["experiment_a", "experiment_b"]),
+        ("validation_loss", False, ["experiment_b", "experiment_a"]),
+        ("validation_loss", True, ["experiment_a", "experiment_b"]),
+    ],
+)
+def test_dynamic_ranking_uses_requested_metric_and_direction(
+    sort_by: str,
+    descending: bool,
+    expected_names: list[str],
+) -> None:
+    records = build_comparison_records(
+        dynamic_batch_result(),
+        metric_specs=configurable_metric_specs(),
+    )
+
+    ranked = rank_comparison_records(
+        records,
+        sort_by=sort_by,
+        descending=descending,
+        metric_specs=configurable_metric_specs(),
+    )
+
+    assert [record["experiment_name"] for record in ranked] == expected_names
+
+
+def test_dynamic_ranking_is_stable_and_does_not_modify_records() -> None:
+    records = build_comparison_records(
+        {
+            "successful_experiments": [
+                dynamic_successful_experiment("first", 0.8, 1),
+                dynamic_successful_experiment("second", 0.8, 2),
+            ],
+            "failed_experiments": [],
+        },
+        metric_specs=configurable_metric_specs(),
+    )
+    original_records = deepcopy(records)
+
+    ranked = rank_comparison_records(
+        records,
+        sort_by="accuracy",
+        metric_specs=configurable_metric_specs(),
+    )
+
+    assert [record["experiment_name"] for record in ranked] == [
+        "first",
+        "second",
+    ]
+    assert records == original_records
+    assert ranked is not records
+
+
+@pytest.mark.parametrize("sort_by", ["unknown", "Accuracy"])
+def test_dynamic_ranking_rejects_nonconfigured_sort_field(
+    sort_by: str,
+) -> None:
+    with pytest.raises(ValueError) as error_info:
+        rank_comparison_records(
+            [],
+            sort_by=sort_by,
+            metric_specs=configurable_metric_specs(),
+        )
+
+    assert str(error_info.value) == (
+        "sort_by must be one of configured metric names: "
+        "accuracy, validation_loss"
+    )
+
+
+def test_dynamic_payload_contains_ordered_specs_records_and_counts() -> None:
+    batch_result = dynamic_batch_result()
+    payload = build_comparison_payload(
+        batch_result,
+        sort_by="validation_loss",
+        descending=False,
+        metric_specs=configurable_metric_specs(),
+    )
+
+    assert list(payload) == [
+        "sort_by",
+        "descending",
+        "metric_specs",
+        "experiment_counts",
+        "comparison_records",
+        "failed_experiments",
+    ]
+    assert payload["sort_by"] == "validation_loss"
+    assert payload["descending"] is False
+    assert payload["metric_specs"] == [
+        {
+            "name": "accuracy",
+            "path": ["validation", "metrics", "accuracy"],
+            "direction": "maximize",
+            "display_name": "Accuracy",
+            "precision": 3,
+        },
+        {
+            "name": "validation_loss",
+            "path": ["validation", "metrics", "loss"],
+            "direction": "minimize",
+            "display_name": "Validation Loss",
+            "precision": 4,
+        },
+    ]
+    assert list(payload["metric_specs"][0]) == [
+        "name",
+        "path",
+        "direction",
+        "display_name",
+        "precision",
+    ]
+    assert payload["experiment_counts"] == {
+        "total": 3,
+        "successful": 2,
+        "failed": 1,
+    }
+    assert payload["comparison_records"][0]["experiment_name"] == (
+        "experiment_b"
+    )
+    assert "metrics" in payload["comparison_records"][0]
+    assert payload["failed_experiments"] is batch_result["failed_experiments"]
+    json.dumps(payload)
+
+
+def test_dynamic_payload_written_json_equals_payload(tmp_path: Path) -> None:
+    payload = build_comparison_payload(
+        dynamic_batch_result(),
+        sort_by="accuracy",
+        metric_specs=configurable_metric_specs(),
+    )
+    output_path = tmp_path / "comparison.json"
+
+    write_comparison_json(payload, output_path)
+
+    assert json.loads(output_path.read_text(encoding="utf-8")) == payload
+
+
+def test_dynamic_pipeline_forwards_specs_and_writes_json_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment_root = tmp_path / "experiments"
+    experiment_dir = experiment_root / "experiment_a"
+    create_required_files(experiment_dir)
+    specs = configurable_metric_specs()
+    received_specs: list[tuple[MetricSpec, ...]] = []
+
+    def fake_summary(**kwargs: object) -> dict:
+        received_specs.append(kwargs["metric_specs"])
+        return dynamic_successful_experiment("experiment_a", 0.8, 2)[
+            "summary"
+        ]
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_experiment_summary",
+        fake_summary,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_markdown",
+        lambda payload: pytest.fail("Markdown must not be built"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_markdown",
+        lambda text, path: pytest.fail("Markdown must not be written"),
+    )
+    output_path = tmp_path / "outputs" / "comparison.json"
+
+    payload = run_comparison_pipeline(
+        experiment_root,
+        output_path,
+        sort_by="accuracy",
+        markdown_output_path=None,
+        metric_specs=specs,
+    )
+
+    assert received_specs == [specs]
+    assert output_path.is_file()
+    assert json.loads(output_path.read_text(encoding="utf-8")) == payload
+    assert payload["comparison_records"][0]["metrics"]["accuracy"][
+        "best_value"
+    ] == 0.8
+
+
+def test_dynamic_pipeline_passes_same_specs_to_analyze_and_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    specs = configurable_metric_specs()
+    received: dict[str, tuple[MetricSpec, ...]] = {}
+    batch_result = {"successful_experiments": [], "failed_experiments": []}
+    expected_payload = {"comparison_records": []}
+
+    def fake_analyze(
+        dirs: list[Path],
+        *,
+        metric_specs: tuple[MetricSpec, ...],
+    ) -> dict:
+        received["analyze"] = metric_specs
+        return batch_result
+
+    def fake_payload(
+        result: dict,
+        *,
+        sort_by: str,
+        descending: bool,
+        metric_specs: tuple[MetricSpec, ...],
+    ) -> dict:
+        received["payload"] = metric_specs
+        return expected_payload
+
+    monkeypatch.setattr(compare_experiments, "find_experiment_dirs", lambda root: [])
+    monkeypatch.setattr(compare_experiments, "analyze_experiment_dirs", fake_analyze)
+    monkeypatch.setattr(compare_experiments, "build_comparison_payload", fake_payload)
+    monkeypatch.setattr(compare_experiments, "write_comparison_json", lambda payload, path: path)
+
+    result = run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        sort_by="accuracy",
+        metric_specs=specs,
+    )
+
+    assert received == {"analyze": specs, "payload": specs}
+    assert received["analyze"] is received["payload"]
+    assert result is expected_payload
+
+
+def test_dynamic_pipeline_rejects_markdown_before_any_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def record_call(name: str):
+        def fake(*args: object, **kwargs: object) -> object:
+            calls.append(name)
+            return []
+
+        return fake
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        record_call("find"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "analyze_experiment_dirs",
+        record_call("analyze"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        record_call("json"),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_markdown",
+        record_call("markdown"),
+    )
+    output_path = tmp_path / "not-created" / "comparison.json"
+    markdown_path = tmp_path / "not-created" / "comparison.md"
+
+    with pytest.raises(ValueError) as error_info:
+        run_comparison_pipeline(
+            tmp_path / "missing-root",
+            output_path,
+            sort_by="accuracy",
+            markdown_output_path=markdown_path,
+            metric_specs=configurable_metric_specs(),
+        )
+
+    assert str(error_info.value) == (
+        "markdown output is not supported with configurable metrics yet"
+    )
+    assert calls == []
+    assert not output_path.parent.exists()
