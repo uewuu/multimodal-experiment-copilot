@@ -3,13 +3,27 @@ from types import MappingProxyType
 
 import pytest
 
-from metrics import MetricSpec, evaluate_metric_history, get_value_at_path
+from metrics import (
+    MetricSpec,
+    evaluate_metric_history,
+    get_value_at_path,
+    parse_metric_specs,
+)
 
 
 def _valid_metric_kwargs() -> dict:
     return {
         "name": "accuracy",
         "path": ("valid", "metrics", "accuracy"),
+        "direction": "maximize",
+        "display_name": "Accuracy",
+    }
+
+
+def _valid_metric_definition() -> dict:
+    return {
+        "name": "accuracy",
+        "path": ["valid", "metrics", "accuracy"],
         "direction": "maximize",
         "display_name": "Accuracy",
     }
@@ -614,3 +628,307 @@ def test_evaluate_metric_history_rejects_invalid_value(value):
         evaluate_metric_history([[0, value]], "maximize")
 
     assert str(error_info.value) == "records[0][1] must be a number"
+
+
+def test_parse_metric_specs_parses_single_metric():
+    specs = parse_metric_specs([_valid_metric_definition()])
+
+    assert specs == (
+        MetricSpec(
+            name="accuracy",
+            path=("valid", "metrics", "accuracy"),
+            direction="maximize",
+            display_name="Accuracy",
+        ),
+    )
+
+
+def test_parse_metric_specs_parses_multiple_metrics():
+    second = {
+        "name": "validation_loss",
+        "path": ["valid", "all", "avg_loss"],
+        "direction": "minimize",
+        "display_name": "Validation Loss",
+    }
+
+    specs = parse_metric_specs([_valid_metric_definition(), second])
+
+    assert len(specs) == 2
+    assert specs[1].name == "validation_loss"
+
+
+def test_parse_metric_specs_preserves_metric_order():
+    second = _valid_metric_definition()
+    second["name"] = "macro_f1"
+    second["display_name"] = "Macro F1"
+
+    specs = parse_metric_specs([_valid_metric_definition(), second])
+
+    assert tuple(spec.name for spec in specs) == ("accuracy", "macro_f1")
+
+
+def test_parse_metric_specs_returns_tuple():
+    specs = parse_metric_specs([_valid_metric_definition()])
+
+    assert isinstance(specs, tuple)
+
+
+def test_parse_metric_specs_converts_list_path_to_tuple():
+    spec = parse_metric_specs([_valid_metric_definition()])[0]
+
+    assert spec.path == ("valid", "metrics", "accuracy")
+    assert isinstance(spec.path, tuple)
+
+
+def test_parse_metric_specs_accepts_tuple_path():
+    definition = _valid_metric_definition()
+    definition["path"] = ("valid", "metrics", "accuracy")
+
+    spec = parse_metric_specs([definition])[0]
+
+    assert spec.path == ("valid", "metrics", "accuracy")
+
+
+def test_parse_metric_specs_uses_default_precision():
+    spec = parse_metric_specs([_valid_metric_definition()])[0]
+
+    assert spec.precision == 6
+
+
+def test_parse_metric_specs_preserves_explicit_precision():
+    definition = _valid_metric_definition()
+    definition["precision"] = 4
+
+    spec = parse_metric_specs([definition])[0]
+
+    assert spec.precision == 4
+
+
+def test_parse_metric_specs_accepts_maximize_direction():
+    spec = parse_metric_specs([_valid_metric_definition()])[0]
+
+    assert spec.direction == "maximize"
+
+
+def test_parse_metric_specs_accepts_minimize_direction():
+    definition = _valid_metric_definition()
+    definition["direction"] = "minimize"
+
+    spec = parse_metric_specs([definition])[0]
+
+    assert spec.direction == "minimize"
+
+
+def test_parse_metric_specs_supports_mapping_proxy():
+    definition = MappingProxyType(_valid_metric_definition())
+
+    spec = parse_metric_specs([definition])[0]
+
+    assert spec.name == "accuracy"
+
+
+def test_parse_metric_specs_supports_tuple_container():
+    specs = parse_metric_specs((_valid_metric_definition(),))
+
+    assert len(specs) == 1
+
+
+def test_parse_metric_specs_returns_empty_tuple_for_empty_definitions():
+    assert parse_metric_specs([]) == ()
+
+
+def test_parse_metric_specs_does_not_modify_definitions():
+    definitions = [_valid_metric_definition()]
+    expected = [_valid_metric_definition()]
+
+    parse_metric_specs(definitions)
+
+    assert definitions == expected
+
+
+def test_parse_metric_specs_does_not_modify_original_path_list():
+    path = ["valid", "metrics", "accuracy"]
+    definition = _valid_metric_definition()
+    definition["path"] = path
+
+    parse_metric_specs([definition])
+
+    assert path == ["valid", "metrics", "accuracy"]
+    assert isinstance(path, list)
+
+
+def test_parse_metric_specs_allows_duplicate_paths():
+    second = _valid_metric_definition()
+    second["name"] = "macro_f1"
+    second["display_name"] = "Macro F1"
+
+    specs = parse_metric_specs([_valid_metric_definition(), second])
+
+    assert specs[0].path == specs[1].path
+
+
+def test_parse_metric_specs_allows_duplicate_display_names():
+    second = _valid_metric_definition()
+    second["name"] = "macro_f1"
+
+    specs = parse_metric_specs([_valid_metric_definition(), second])
+
+    assert specs[0].display_name == specs[1].display_name
+
+
+@pytest.mark.parametrize(
+    "definitions",
+    [
+        "definitions",
+        b"definitions",
+        None,
+        {"metrics": []},
+        (definition for definition in [_valid_metric_definition()]),
+    ],
+    ids=["string", "bytes", "none", "mapping", "generator"],
+)
+def test_parse_metric_specs_rejects_non_sequence_definitions(definitions):
+    with pytest.raises(TypeError) as error_info:
+        parse_metric_specs(definitions)
+
+    assert str(error_info.value) == "definitions must be a sequence"
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [123, "definition", [], None],
+    ids=["integer", "string", "list", "none"],
+)
+def test_parse_metric_specs_rejects_non_mapping_definition(definition):
+    with pytest.raises(TypeError) as error_info:
+        parse_metric_specs([definition])
+
+    assert str(error_info.value) == "definitions[0] must be a mapping"
+
+
+def test_parse_metric_specs_rejects_non_string_definition_key():
+    definition = _valid_metric_definition()
+    definition[1] = "unexpected"
+
+    with pytest.raises(TypeError) as error_info:
+        parse_metric_specs([definition])
+
+    assert str(error_info.value) == "definitions[0] keys must be strings"
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["name", "path", "direction", "display_name"],
+)
+def test_parse_metric_specs_reports_missing_required_field(field):
+    definition = _valid_metric_definition()
+    del definition[field]
+
+    with pytest.raises(ValueError) as error_info:
+        parse_metric_specs([definition])
+
+    assert (
+        str(error_info.value)
+        == f"definitions[0] is missing required field '{field}'"
+    )
+
+
+@pytest.mark.parametrize("field", ["typo", "extra"])
+def test_parse_metric_specs_rejects_unknown_field(field):
+    definition = _valid_metric_definition()
+    definition[field] = "unexpected"
+
+    with pytest.raises(ValueError) as error_info:
+        parse_metric_specs([definition])
+
+    assert (
+        str(error_info.value)
+        == f"definitions[0] contains unknown field '{field}'"
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "valid.metrics.accuracy",
+        {"valid": "accuracy"},
+        {"valid", "accuracy"},
+        (part for part in ["valid", "accuracy"]),
+        None,
+    ],
+    ids=["string", "mapping", "set", "generator", "none"],
+)
+def test_parse_metric_specs_rejects_invalid_path_container(path):
+    definition = _valid_metric_definition()
+    definition["path"] = path
+
+    with pytest.raises(TypeError) as error_info:
+        parse_metric_specs([definition])
+
+    assert str(error_info.value) == (
+        "definitions[0].path must be a list or tuple"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_type", "message"),
+    [
+        ("name", 1, TypeError, "name must be a string"),
+        ("name", "   ", ValueError, "name must not be empty or whitespace"),
+        ("path", ["valid", 1], TypeError, "path[1] must be a string"),
+        (
+            "direction",
+            "max",
+            ValueError,
+            "direction must be 'maximize' or 'minimize'",
+        ),
+        (
+            "display_name",
+            "",
+            ValueError,
+            "display_name must not be empty or whitespace",
+        ),
+        ("precision", True, TypeError, "precision must be an integer"),
+        (
+            "precision",
+            -1,
+            ValueError,
+            "precision must be greater than or equal to 0",
+        ),
+    ],
+    ids=[
+        "name-type",
+        "blank-name",
+        "path-member-type",
+        "direction",
+        "empty-display-name",
+        "bool-precision",
+        "negative-precision",
+    ],
+)
+def test_parse_metric_specs_prefixes_metric_spec_errors(
+    field,
+    value,
+    error_type,
+    message,
+):
+    definition = _valid_metric_definition()
+    definition[field] = value
+
+    with pytest.raises(error_type) as error_info:
+        parse_metric_specs([definition])
+
+    assert str(error_info.value) == f"definitions[0]: {message}"
+
+
+def test_parse_metric_specs_rejects_duplicate_metric_name():
+    first = _valid_metric_definition()
+    second = _valid_metric_definition()
+
+    with pytest.raises(ValueError) as error_info:
+        parse_metric_specs([first, second])
+
+    assert str(error_info.value) == (
+        "duplicate metric name 'accuracy' at definitions[1]; "
+        "first defined at definitions[0]"
+    )

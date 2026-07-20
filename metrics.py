@@ -170,3 +170,71 @@ class MetricSpec:
             raise TypeError("precision must be an integer")
         if self.precision < 0:
             raise ValueError("precision must be greater than or equal to 0")
+
+
+def parse_metric_specs(
+    definitions: Sequence[Mapping[str, object]],
+) -> tuple[MetricSpec, ...]:
+    """从配置映射序列解析指标定义。"""
+    if (
+        isinstance(definitions, (str, bytes, bytearray, Mapping))
+        or not isinstance(definitions, Sequence)
+    ):
+        raise TypeError("definitions must be a sequence")
+
+    required_fields = ("name", "path", "direction", "display_name")
+    allowed_fields = {*required_fields, "precision"}
+    specs: list[MetricSpec] = []
+    name_indexes: dict[str, int] = {}
+
+    for index, definition in enumerate(definitions):
+        if not isinstance(definition, Mapping):
+            raise TypeError(f"definitions[{index}] must be a mapping")
+        if any(not isinstance(key, str) for key in definition):
+            raise TypeError(f"definitions[{index}] keys must be strings")
+
+        for field in required_fields:
+            if field not in definition:
+                raise ValueError(
+                    f"definitions[{index}] is missing required field '{field}'"
+                )
+
+        for field in definition:
+            if field not in allowed_fields:
+                raise ValueError(
+                    f"definitions[{index}] contains unknown field '{field}'"
+                )
+
+        path = definition["path"]
+        if not isinstance(path, (list, tuple)):
+            raise TypeError(
+                f"definitions[{index}].path must be a list or tuple"
+            )
+
+        try:
+            spec = MetricSpec(
+                name=definition["name"],
+                path=tuple(path),
+                direction=definition["direction"],
+                display_name=definition["display_name"],
+                **(
+                    {"precision": definition["precision"]}
+                    if "precision" in definition
+                    else {}
+                ),
+            )
+        except (TypeError, ValueError) as error:
+            raise type(error)(f"definitions[{index}]: {error}") from error
+
+        if spec.name in name_indexes:
+            first_index = name_indexes[spec.name]
+            raise ValueError(
+                "duplicate metric name "
+                f"'{spec.name}' at definitions[{index}]; "
+                f"first defined at definitions[{first_index}]"
+            )
+
+        name_indexes[spec.name] = index
+        specs.append(spec)
+
+    return tuple(specs)
