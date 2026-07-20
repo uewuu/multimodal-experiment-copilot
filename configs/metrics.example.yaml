@@ -1,0 +1,18 @@
+metrics:
+  - name: accuracy
+    path:
+      - validation
+      - metrics
+      - accuracy
+    direction: maximize
+    display_name: Accuracy
+    precision: 4
+
+  - name: validation_loss
+    path:
+      - validation
+      - metrics
+      - loss
+    direction: minimize
+    display_name: Validation Loss
+    precision: 6
