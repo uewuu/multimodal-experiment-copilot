@@ -1,11 +1,80 @@
 """通用实验指标定义。"""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 
 MetricDirection = Literal["maximize", "minimize"]
+
+
+def evaluate_metric_history(
+    records: Sequence[Sequence[object]],
+    direction: MetricDirection,
+) -> dict[str, int | float]:
+    """校验并评估指标历史记录。"""
+    if (
+        isinstance(records, (str, bytes, bytearray, Mapping))
+        or not isinstance(records, Sequence)
+    ):
+        raise TypeError("records must be a sequence")
+    if not records:
+        raise ValueError("records must not be empty")
+
+    if not isinstance(direction, str):
+        raise TypeError("direction must be a string")
+    if direction not in ("maximize", "minimize"):
+        raise ValueError("direction must be 'maximize' or 'minimize'")
+
+    first_epoch = 0
+    first_value: int | float = 0
+    last_epoch = 0
+    last_value: int | float = 0
+    best_epoch = 0
+    best_value: int | float = 0
+
+    for index, record in enumerate(records):
+        if (
+            isinstance(record, (str, bytes, bytearray, Mapping))
+            or not isinstance(record, Sequence)
+        ):
+            raise TypeError(f"records[{index}] must be a sequence")
+        if len(record) != 2:
+            raise ValueError(
+                f"records[{index}] must contain exactly two items"
+            )
+
+        epoch, value = record
+        if isinstance(epoch, bool) or not isinstance(epoch, int):
+            raise TypeError(f"records[{index}][0] must be an integer")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"records[{index}][1] must be a number")
+
+        if index == 0:
+            first_epoch = epoch
+            first_value = value
+            best_epoch = epoch
+            best_value = value
+
+        last_epoch = epoch
+        last_value = value
+        if (
+            direction == "maximize" and value > best_value
+        ) or (
+            direction == "minimize" and value < best_value
+        ):
+            best_epoch = epoch
+            best_value = value
+
+    return {
+        "record_count": len(records),
+        "first_epoch": first_epoch,
+        "first_value": first_value,
+        "last_epoch": last_epoch,
+        "last_value": last_value,
+        "best_epoch": best_epoch,
+        "best_value": best_value,
+    }
 
 
 def get_value_at_path(

@@ -3,7 +3,7 @@ from types import MappingProxyType
 
 import pytest
 
-from metrics import MetricSpec, get_value_at_path
+from metrics import MetricSpec, evaluate_metric_history, get_value_at_path
 
 
 def _valid_metric_kwargs() -> dict:
@@ -379,3 +379,238 @@ def test_get_value_at_path_rejects_non_mapping_at_nested_level():
         str(error_info.value)
         == "value at path 'valid.metrics' must be a mapping"
     )
+
+
+def test_evaluate_metric_history_maximizes_values():
+    result = evaluate_metric_history(
+        [[0, 0.60], [1, 0.72], [2, 0.68]],
+        "maximize",
+    )
+
+    assert result["best_epoch"] == 1
+    assert result["best_value"] == 0.72
+
+
+def test_evaluate_metric_history_minimizes_values():
+    result = evaluate_metric_history(
+        [[0, 0.60], [1, 0.42], [2, 0.48]],
+        "minimize",
+    )
+
+    assert result["best_epoch"] == 1
+    assert result["best_value"] == 0.42
+
+
+def test_evaluate_metric_history_returns_expected_structure():
+    result = evaluate_metric_history([[0, 0.60]], "maximize")
+
+    assert set(result) == {
+        "record_count",
+        "first_epoch",
+        "first_value",
+        "last_epoch",
+        "last_value",
+        "best_epoch",
+        "best_value",
+    }
+
+
+def test_evaluate_metric_history_reports_first_record():
+    result = evaluate_metric_history([[5, 0.60], [6, 0.72]], "maximize")
+
+    assert result["first_epoch"] == 5
+    assert result["first_value"] == 0.60
+
+
+def test_evaluate_metric_history_reports_last_record():
+    result = evaluate_metric_history([[5, 0.60], [6, 0.72]], "maximize")
+
+    assert result["last_epoch"] == 6
+    assert result["last_value"] == 0.72
+
+
+def test_evaluate_metric_history_reports_record_count():
+    result = evaluate_metric_history([[0, 0.60], [1, 0.72], [2, 0.68]], "maximize")
+
+    assert result["record_count"] == 3
+
+
+def test_evaluate_metric_history_preserves_first_maximum_on_tie():
+    result = evaluate_metric_history([[0, 0.72], [1, 0.60], [2, 0.72]], "maximize")
+
+    assert result["best_epoch"] == 0
+
+
+def test_evaluate_metric_history_preserves_first_minimum_on_tie():
+    result = evaluate_metric_history([[0, 0.42], [1, 0.60], [2, 0.42]], "minimize")
+
+    assert result["best_epoch"] == 0
+
+
+def test_evaluate_metric_history_accepts_tuple_records():
+    result = evaluate_metric_history([(0, 0.60), (1, 0.72)], "maximize")
+
+    assert result["best_epoch"] == 1
+
+
+def test_evaluate_metric_history_accepts_tuple_container():
+    result = evaluate_metric_history(([0, 0.60], [1, 0.72]), "maximize")
+
+    assert result["record_count"] == 2
+
+
+def test_evaluate_metric_history_accepts_integer_values():
+    result = evaluate_metric_history([[0, 2], [1, 3]], "maximize")
+
+    assert result["best_value"] == 3
+    assert isinstance(result["best_value"], int)
+
+
+def test_evaluate_metric_history_accepts_negative_values():
+    result = evaluate_metric_history([[0, -2.0], [1, -3.0]], "minimize")
+
+    assert result["best_value"] == -3.0
+
+
+def test_evaluate_metric_history_accepts_negative_epoch():
+    result = evaluate_metric_history([[-1, 0.60], [0, 0.72]], "maximize")
+
+    assert result["first_epoch"] == -1
+
+
+def test_evaluate_metric_history_does_not_sort_by_epoch():
+    result = evaluate_metric_history([[10, 0.60], [1, 0.72], [5, 0.68]], "maximize")
+
+    assert result["first_epoch"] == 10
+    assert result["last_epoch"] == 5
+    assert result["best_epoch"] == 1
+
+
+def test_evaluate_metric_history_does_not_modify_records():
+    records = [[0, 0.60], [1, 0.72]]
+    expected = [[0, 0.60], [1, 0.72]]
+
+    evaluate_metric_history(records, "maximize")
+
+    assert records == expected
+
+
+def test_evaluate_metric_history_handles_single_record():
+    result = evaluate_metric_history([[4, 0.75]], "minimize")
+
+    assert result == {
+        "record_count": 1,
+        "first_epoch": 4,
+        "first_value": 0.75,
+        "last_epoch": 4,
+        "last_value": 0.75,
+        "best_epoch": 4,
+        "best_value": 0.75,
+    }
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        "records",
+        b"records",
+        bytearray(b"records"),
+        {"epoch": 0, "value": 0.60},
+        (record for record in [[0, 0.60]]),
+        123,
+    ],
+    ids=["string", "bytes", "bytearray", "mapping", "generator", "integer"],
+)
+def test_evaluate_metric_history_rejects_non_sequence_records(records):
+    with pytest.raises(TypeError) as error_info:
+        evaluate_metric_history(records, "maximize")
+
+    assert str(error_info.value) == "records must be a sequence"
+
+
+@pytest.mark.parametrize("records", [[], ()], ids=["list", "tuple"])
+def test_evaluate_metric_history_rejects_empty_records(records):
+    with pytest.raises(ValueError) as error_info:
+        evaluate_metric_history(records, "maximize")
+
+    assert str(error_info.value) == "records must not be empty"
+
+
+@pytest.mark.parametrize(
+    ("direction", "error_type", "message"),
+    [
+        (1, TypeError, "direction must be a string"),
+        ("max", ValueError, "direction must be 'maximize' or 'minimize'"),
+        ("min", ValueError, "direction must be 'maximize' or 'minimize'"),
+        ("MAXIMIZE", ValueError, "direction must be 'maximize' or 'minimize'"),
+        ("", ValueError, "direction must be 'maximize' or 'minimize'"),
+    ],
+    ids=["non-string", "max-alias", "min-alias", "uppercase", "empty"],
+)
+def test_evaluate_metric_history_rejects_invalid_direction(
+    direction,
+    error_type,
+    message,
+):
+    with pytest.raises(error_type) as error_info:
+        evaluate_metric_history([[0, 0.60]], direction)
+
+    assert str(error_info.value) == message
+
+
+@pytest.mark.parametrize(
+    ("record", "error_type", "message"),
+    [
+        (123, TypeError, "records[0] must be a sequence"),
+        ("record", TypeError, "records[0] must be a sequence"),
+        (b"record", TypeError, "records[0] must be a sequence"),
+        (bytearray(b"record"), TypeError, "records[0] must be a sequence"),
+        ({"epoch": 0}, TypeError, "records[0] must be a sequence"),
+        ([0], ValueError, "records[0] must contain exactly two items"),
+        ([0, 0.60, 1], ValueError, "records[0] must contain exactly two items"),
+        ([], ValueError, "records[0] must contain exactly two items"),
+    ],
+    ids=[
+        "integer",
+        "string",
+        "bytes",
+        "bytearray",
+        "mapping",
+        "one-item",
+        "three-items",
+        "empty",
+    ],
+)
+def test_evaluate_metric_history_rejects_invalid_record(
+    record,
+    error_type,
+    message,
+):
+    with pytest.raises(error_type) as error_info:
+        evaluate_metric_history([record], "maximize")
+
+    assert str(error_info.value) == message
+
+
+@pytest.mark.parametrize(
+    "epoch",
+    [1.5, "0", None, True, False],
+    ids=["float", "string", "none", "true", "false"],
+)
+def test_evaluate_metric_history_rejects_invalid_epoch(epoch):
+    with pytest.raises(TypeError) as error_info:
+        evaluate_metric_history([[epoch, 0.60]], "maximize")
+
+    assert str(error_info.value) == "records[0][0] must be an integer"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0.60", None, [], True, False],
+    ids=["string", "none", "list", "true", "false"],
+)
+def test_evaluate_metric_history_rejects_invalid_value(value):
+    with pytest.raises(TypeError) as error_info:
+        evaluate_metric_history([[0, value]], "maximize")
+
+    assert str(error_info.value) == "records[0][1] must be a number"
