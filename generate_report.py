@@ -13,6 +13,11 @@ DEFAULT_EXPERIMENT_DIR = CONFIG_PATH.parent
 SUMMARY_JSON_FILENAME = "experiment_summary.json"
 REPORT_MD_FILENAME = "experiment_report.md"
 
+_DIAGNOSTIC_METRIC_DISPLAY_NAMES = {
+    "r2": "R²",
+    "racc": "RACC",
+}
+
 
 def write_summary_json(summary: dict, output_path: Path) -> None:
     """将结构化实验摘要写入 JSON 文件。"""
@@ -24,6 +29,60 @@ def write_summary_json(summary: dict, output_path: Path) -> None:
             file,
             ensure_ascii=False,
             indent=2,
+        )
+
+
+def _escape_markdown_cell(value: object) -> str:
+    """转义 Markdown 表格单元格中的换行与竖线。"""
+    text = str(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.replace("\n", "<br>").replace("|", "\\|")
+
+
+def _append_diagnostics_section(
+    report_lines: list[str],
+    summary: dict,
+) -> None:
+    """在摘要包含诊断载荷时追加 Markdown 诊断章节。"""
+    if "diagnostics" not in summary:
+        return
+
+    metric_payloads = summary["diagnostics"]["metrics"]
+    report_lines.extend(
+        [
+            "",
+            "## 5. 规则诊断",
+            "",
+            "| 指标 | 级别 | 代码 | 说明 | 证据 |",
+            "|---|---|---|---|---|",
+        ]
+    )
+
+    diagnostic_count = 0
+    for metric_name, metric_payload in metric_payloads.items():
+        metric_display_name = _DIAGNOSTIC_METRIC_DISPLAY_NAMES.get(
+            metric_name,
+            metric_name,
+        )
+        for diagnostic in metric_payload["diagnostics"]:
+            evidence_text = json.dumps(
+                diagnostic["evidence"],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            report_lines.append(
+                "| "
+                f"{_escape_markdown_cell(metric_display_name)} | "
+                f"{_escape_markdown_cell(diagnostic['severity'])} | "
+                f"`{_escape_markdown_cell(diagnostic['code'])}` | "
+                f"{_escape_markdown_cell(diagnostic['message'])} | "
+                f"`{_escape_markdown_cell(evidence_text)}` |"
+            )
+            diagnostic_count += 1
+
+    if diagnostic_count == 0:
+        report_lines.append(
+            "| — | — | — | 未生成诊断信息 | — |"
         )
 
 
@@ -133,6 +192,8 @@ def build_markdown_report(summary: dict) -> str:
             "可能由早停、手动中断或其他训练终止条件造成。"
         )
 
+    _append_diagnostics_section(report_lines, summary)
+
     return "\n".join(report_lines) + "\n"
 
 
@@ -151,12 +212,24 @@ def generate_experiment_report(
     config_path: Path = CONFIG_PATH,
     history_path: Path = HISTORY_PATH,
     output_dir: Path = OUTPUT_DIR,
+    *,
+    include_diagnostics: bool = False,
 ) -> tuple[Path, Path]:
     """读取实验文件并生成 JSON 摘要和 Markdown 报告。"""
-    summary = build_experiment_summary(
-        config_path=config_path,
-        history_path=history_path,
-    )
+    if not isinstance(include_diagnostics, bool):
+        raise TypeError("include_diagnostics must be a boolean")
+
+    if include_diagnostics:
+        summary = build_experiment_summary(
+            config_path=config_path,
+            history_path=history_path,
+            include_diagnostics=True,
+        )
+    else:
+        summary = build_experiment_summary(
+            config_path=config_path,
+            history_path=history_path,
+        )
     report_content = build_markdown_report(summary)
 
     summary_json_path = output_dir / SUMMARY_JSON_FILENAME
@@ -168,7 +241,9 @@ def generate_experiment_report(
     return summary_json_path, report_md_path
 
 
-def parse_arguments() -> argparse.Namespace:
+def parse_arguments(
+    argv: list[str] | None = None,
+) -> argparse.Namespace:
     """读取并解析命令行参数。"""
     parser = argparse.ArgumentParser(
         description=(
@@ -197,7 +272,13 @@ def parse_arguments() -> argparse.Namespace:
         ),
     )
 
-    return parser.parse_args()
+    parser.add_argument(
+        "--include-diagnostics",
+        action="store_true",
+        help="在 JSON 摘要和 Markdown 报告中加入规则诊断。",
+    )
+
+    return parser.parse_args(argv)
 
 
 def resolve_experiment_paths(
@@ -222,27 +303,43 @@ def resolve_experiment_paths(
     return config_path, history_path
 
 
-def main() -> None:
-    args = parse_arguments()
+def main(
+    argv: list[str] | None = None,
+) -> None:
+    args = parse_arguments(argv)
 
     try:
         config_path, history_path = resolve_experiment_paths(
             args.experiment_dir
         )
 
-        summary_json_path, report_md_path = generate_experiment_report(
-            config_path=config_path,
-            history_path=history_path,
-            output_dir=args.output_dir,
-        )
+        if args.include_diagnostics:
+            summary_json_path, report_md_path = (
+                generate_experiment_report(
+                    config_path=config_path,
+                    history_path=history_path,
+                    output_dir=args.output_dir,
+                    include_diagnostics=True,
+                )
+            )
+        else:
+            summary_json_path, report_md_path = (
+                generate_experiment_report(
+                    config_path=config_path,
+                    history_path=history_path,
+                    output_dir=args.output_dir,
+                )
+            )
     except FileNotFoundError as error:
         raise SystemExit(f"报告生成失败：{error}") from error
-   
+
     print("实验报告生成完成")
     print("-" * 50)
     print(f"实验目录：{args.experiment_dir}")
     print(f"JSON 摘要：{summary_json_path}")
-    print(f"Markdown 报告：{report_md_path}")  
+    print(f"Markdown 报告：{report_md_path}")
+    if args.include_diagnostics:
+        print("规则诊断：已启用")
 
 
 if __name__ == "__main__":
