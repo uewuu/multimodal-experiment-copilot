@@ -3,6 +3,11 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from diagnostics import (
+    build_comparison_diagnostics,
+    build_comparison_facts,
+    diagnostic_to_dict,
+)
 from metrics import MetricSpec
 from read_config import CONFIG_PATH
 from read_history import HISTORY_PATH
@@ -268,8 +273,13 @@ def build_comparison_payload(
     sort_by: str = "best_r2",
     descending: bool = True,
     metric_specs: Sequence[MetricSpec] | None = None,
+    *,
+    include_diagnostics: bool = False,
 ) -> dict:
     """构建包含排序记录、实验数量和失败信息的对比载荷。"""
+    if not isinstance(include_diagnostics, bool):
+        raise TypeError("include_diagnostics must be a boolean")
+
     if metric_specs is None:
         comparison_records = build_comparison_records(batch_result)
         ranked_records = rank_comparison_records(
@@ -321,17 +331,29 @@ def build_comparison_payload(
         "failed_experiments": batch_result["failed_experiments"],
     }
 
-    if serialized_metric_specs is None:
+    if serialized_metric_specs is not None:
+        payload = {
+            "sort_by": payload["sort_by"],
+            "descending": payload["descending"],
+            "metric_specs": serialized_metric_specs,
+            "experiment_counts": payload["experiment_counts"],
+            "comparison_records": payload["comparison_records"],
+            "failed_experiments": payload["failed_experiments"],
+        }
+
+    if not include_diagnostics:
         return payload
 
-    return {
-        "sort_by": payload["sort_by"],
-        "descending": payload["descending"],
-        "metric_specs": serialized_metric_specs,
-        "experiment_counts": payload["experiment_counts"],
-        "comparison_records": payload["comparison_records"],
-        "failed_experiments": payload["failed_experiments"],
+    facts = build_comparison_facts(payload)
+    diagnostics = build_comparison_diagnostics(facts)
+    payload["diagnostics"] = {
+        "facts": facts,
+        "diagnostics": [
+            diagnostic_to_dict(diagnostic)
+            for diagnostic in diagnostics
+        ],
     }
+    return payload
 
 
 def _escape_markdown_cell(value: object) -> str:
