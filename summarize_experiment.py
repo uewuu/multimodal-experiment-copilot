@@ -2,7 +2,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from pprint import pprint
 
+from diagnostics import (
+    build_metric_diagnostics,
+    build_metric_facts,
+    diagnostic_to_dict,
+)
 from metrics import (
+    MetricDirection,
     MetricSpec,
     evaluate_metric_history,
     get_value_at_path,
@@ -47,14 +53,42 @@ def _validate_metric_specs(
     return tuple(validated_specs)
 
 
+def _build_metric_diagnostic_payload(
+    records: Sequence[Sequence[object]],
+    direction: MetricDirection,
+    recent_window: int,
+) -> dict[str, object]:
+    facts = build_metric_facts(
+        records,
+        direction,
+        recent_window=recent_window,
+    )
+    diagnostics = build_metric_diagnostics(facts)
+
+    return {
+        "facts": facts,
+        "diagnostics": [
+            diagnostic_to_dict(item)
+            for item in diagnostics
+        ],
+    }
+
+
 def build_experiment_summary(
     config_path: Path = CONFIG_PATH,
     history_path: Path = HISTORY_PATH,
     metric_specs: Sequence[MetricSpec] | None = None,
+    *,
+    include_diagnostics: bool = False,
+    diagnostic_recent_window: int = 5,
 ) -> dict:
     """读取指定配置和训练历史文件，生成结构化实验摘要。"""
+    if not isinstance(include_diagnostics, bool):
+        raise TypeError("include_diagnostics must be a boolean")
+
     config = read_config(config_path)
     history = read_history(history_path)
+    metric_diagnostic_payloads: dict[str, dict[str, object]] = {}
 
     if metric_specs is None:
         r2_summary = analyze_validation_metric(history, "r2")
@@ -63,6 +97,22 @@ def build_experiment_summary(
             "r2": r2_summary,
             "racc": racc_summary,
         }
+        if include_diagnostics:
+            default_records = history["valid"]["app"]
+            metric_diagnostic_payloads["r2"] = (
+                _build_metric_diagnostic_payload(
+                    default_records["r2"],
+                    "maximize",
+                    diagnostic_recent_window,
+                )
+            )
+            metric_diagnostic_payloads["racc"] = (
+                _build_metric_diagnostic_payload(
+                    default_records["racc"],
+                    "maximize",
+                    diagnostic_recent_window,
+                )
+            )
     else:
         validated_metric_specs = _validate_metric_specs(metric_specs)
         validation_metrics: dict[str, dict] = {}
@@ -77,6 +127,14 @@ def build_experiment_summary(
                 "metric_name": spec.name,
                 **evaluation,
             }
+            if include_diagnostics:
+                metric_diagnostic_payloads[spec.name] = (
+                    _build_metric_diagnostic_payload(
+                        records,
+                        spec.direction,
+                        diagnostic_recent_window,
+                    )
+                )
 
     summary = {
         "configuration": {
@@ -105,6 +163,11 @@ def build_experiment_summary(
         },
         "validation_metrics": validation_metrics,
     }
+
+    if include_diagnostics:
+        summary["diagnostics"] = {
+            "metrics": metric_diagnostic_payloads,
+        }
 
     return summary
 

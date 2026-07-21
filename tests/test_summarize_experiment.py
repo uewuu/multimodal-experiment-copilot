@@ -1,3 +1,5 @@
+import inspect
+import json
 from collections import UserList
 from copy import deepcopy
 from pathlib import Path
@@ -5,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import summarize_experiment
+from diagnostics import Diagnostic
 from metrics import MetricSpec
 from summarize_experiment import build_experiment_summary
 
@@ -83,11 +86,13 @@ def _patch_inputs(
 
 def _build_summary(
     metric_specs=None,
+    **kwargs,
 ) -> dict:
     return build_experiment_summary(
         config_path=Path("memory/hparams.yaml"),
         history_path=Path("memory/history.json"),
         metric_specs=metric_specs,
+        **kwargs,
     )
 
 
@@ -593,3 +598,889 @@ def test_build_experiment_summary_propagates_metric_history_errors(
         _build_summary([_metric_spec()])
 
     assert str(error_info.value) == message
+
+
+DIAGNOSTIC_FACT_KEYS = [
+    "record_count",
+    "first_epoch",
+    "first_value",
+    "last_epoch",
+    "last_value",
+    "best_epoch",
+    "best_value",
+    "best_record_index",
+    "best_progress_ratio",
+    "best_at_first_record",
+    "best_at_last_record",
+    "duplicate_epochs",
+    "non_monotonic_epoch_transitions",
+    "improvement_from_first",
+    "regression_from_best",
+    "recent_window_requested",
+    "recent_window_size",
+    "recent_transition_count",
+    "recent_improving_steps",
+    "recent_degrading_steps",
+    "recent_flat_steps",
+    "recent_net_change",
+    "recent_trend",
+]
+
+
+def _loss_spec() -> MetricSpec:
+    return _metric_spec(
+        name="loss",
+        path=("validation", "metrics", "loss"),
+        direction="minimize",
+        display_name="Loss",
+    )
+
+
+def _diagnostic_codes(summary: dict, metric_name: str) -> list[str]:
+    return [
+        item["code"]
+        for item in summary["diagnostics"]["metrics"][metric_name][
+            "diagnostics"
+        ]
+    ]
+
+
+def test_build_experiment_summary_signature_adds_keyword_only_diagnostics():
+    signature = inspect.signature(build_experiment_summary)
+    include_parameter = signature.parameters["include_diagnostics"]
+    window_parameter = signature.parameters["diagnostic_recent_window"]
+
+    assert include_parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert window_parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert include_parameter.default is False
+    assert window_parameter.default == 5
+
+
+def test_build_experiment_summary_preserves_existing_parameter_order():
+    parameters = list(inspect.signature(build_experiment_summary).parameters)
+
+    assert parameters == [
+        "config_path",
+        "history_path",
+        "metric_specs",
+        "include_diagnostics",
+        "diagnostic_recent_window",
+    ]
+
+
+def test_omitted_diagnostics_preserves_exact_default_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    implicit = _build_summary()
+    explicit = _build_summary(include_diagnostics=False)
+
+    assert implicit == explicit
+    assert list(implicit) == ["configuration", "validation_metrics"]
+
+
+def test_explicit_false_preserves_exact_dynamic_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _dynamic_history())
+    specs = [_metric_spec(), _loss_spec()]
+
+    implicit = _build_summary(specs)
+    explicit = _build_summary(specs, include_diagnostics=False)
+
+    assert implicit == explicit
+    assert list(explicit) == ["configuration", "validation_metrics"]
+
+
+def test_disabled_diagnostics_does_not_call_diagnostic_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    def fail(*args, **kwargs):
+        raise AssertionError("diagnostic helper must not be called")
+
+    monkeypatch.setattr(summarize_experiment, "build_metric_facts", fail)
+    monkeypatch.setattr(summarize_experiment, "build_metric_diagnostics", fail)
+    monkeypatch.setattr(summarize_experiment, "diagnostic_to_dict", fail)
+
+    summary = _build_summary(include_diagnostics=False)
+
+    assert "diagnostics" not in summary
+
+
+@pytest.mark.parametrize("unused_window", [True, 1, 0, -1, "invalid", None])
+def test_disabled_diagnostics_ignores_diagnostic_recent_window(
+    monkeypatch: pytest.MonkeyPatch,
+    unused_window,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    summary = _build_summary(
+        include_diagnostics=False,
+        diagnostic_recent_window=unused_window,
+    )
+
+    assert list(summary) == ["configuration", "validation_metrics"]
+
+
+@pytest.mark.parametrize(
+    "invalid_include_diagnostics",
+    [0, 1, "true", None, [], {}],
+    ids=["zero", "one", "string", "none", "list", "mapping"],
+)
+def test_build_experiment_summary_rejects_non_boolean_include_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_include_diagnostics,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    with pytest.raises(
+        TypeError,
+        match="^include_diagnostics must be a boolean$",
+    ):
+        _build_summary(include_diagnostics=invalid_include_diagnostics)
+
+
+def test_include_diagnostics_validation_happens_before_file_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"config": 0, "history": 0}
+
+    def fake_read_config(path: Path) -> dict:
+        calls["config"] += 1
+        return _configuration()
+
+    def fake_read_history(path: Path) -> dict:
+        calls["history"] += 1
+        return _default_history()
+
+    monkeypatch.setattr(summarize_experiment, "read_config", fake_read_config)
+    monkeypatch.setattr(summarize_experiment, "read_history", fake_read_history)
+
+    with pytest.raises(TypeError):
+        _build_summary(include_diagnostics=1)
+
+    assert calls == {"config": 0, "history": 0}
+
+
+def test_default_diagnostics_adds_exact_top_level_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    summary = _build_summary(include_diagnostics=True)
+
+    assert list(summary) == [
+        "configuration",
+        "validation_metrics",
+        "diagnostics",
+    ]
+    assert list(summary["diagnostics"]) == ["metrics"]
+    assert list(summary["diagnostics"]["metrics"]) == ["r2", "racc"]
+
+
+def test_default_diagnostics_metric_entries_have_stable_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    metrics = _build_summary(include_diagnostics=True)["diagnostics"]["metrics"]
+
+    assert list(metrics["r2"]) == ["facts", "diagnostics"]
+    assert list(metrics["racc"]) == ["facts", "diagnostics"]
+    assert list(metrics["r2"]["facts"]) == DIAGNOSTIC_FACT_KEYS
+    assert list(metrics["racc"]["facts"]) == DIAGNOSTIC_FACT_KEYS
+
+
+def test_default_diagnostics_are_serialized_plain_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    metrics = _build_summary(include_diagnostics=True)["diagnostics"]["metrics"]
+
+    for metric in metrics.values():
+        assert type(metric) is dict
+        assert type(metric["facts"]) is dict
+        assert type(metric["diagnostics"]) is list
+        for diagnostic in metric["diagnostics"]:
+            assert type(diagnostic) is dict
+            assert list(diagnostic) == [
+                "code",
+                "severity",
+                "message",
+                "evidence",
+            ]
+            assert type(diagnostic["evidence"]) is dict
+
+
+def test_default_diagnostics_summary_is_json_serializable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    summary = _build_summary(include_diagnostics=True)
+
+    assert json.loads(json.dumps(summary, allow_nan=False)) == summary
+
+
+def test_diagnostics_does_not_change_default_validation_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    without_diagnostics = _build_summary()
+    with_diagnostics = _build_summary(include_diagnostics=True)
+
+    assert (
+        with_diagnostics["validation_metrics"]
+        == without_diagnostics["validation_metrics"]
+    )
+    assert not {
+        "facts",
+        "diagnostics",
+    } & set(with_diagnostics["validation_metrics"]["r2"])
+
+
+def test_enabled_summary_does_not_contain_recommendations_or_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    summary = _build_summary(include_diagnostics=True)
+    serialized = json.dumps(summary)
+
+    assert "recommendations" not in serialized
+    assert "include_diagnostics" not in summary
+    assert "diagnostic_recent_window" not in summary
+
+
+def test_default_diagnostics_use_raw_records_and_maximize_direction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = _default_history()
+    _patch_inputs(monkeypatch, history)
+    received: list[tuple[object, str, int]] = []
+
+    def fake_build_metric_facts(records, direction, *, recent_window):
+        received.append((records, direction, recent_window))
+        return {"record_count": len(records)}
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_facts",
+        fake_build_metric_facts,
+    )
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_diagnostics",
+        lambda facts: (),
+    )
+
+    _build_summary(include_diagnostics=True)
+
+    assert received == [
+        (history["valid"]["app"]["r2"], "maximize", 5),
+        (history["valid"]["app"]["racc"], "maximize", 5),
+    ]
+    assert received[0][0] is history["valid"]["app"]["r2"]
+    assert received[1][0] is history["valid"]["app"]["racc"]
+
+
+def test_default_diagnostics_read_each_input_file_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"config": 0, "history": 0}
+
+    def fake_read_config(path: Path) -> dict:
+        calls["config"] += 1
+        return _configuration()
+
+    def fake_read_history(path: Path) -> dict:
+        calls["history"] += 1
+        return _default_history()
+
+    monkeypatch.setattr(summarize_experiment, "read_config", fake_read_config)
+    monkeypatch.setattr(summarize_experiment, "read_history", fake_read_history)
+
+    _build_summary(include_diagnostics=True)
+
+    assert calls == {"config": 1, "history": 1}
+
+
+def test_default_diagnostics_call_each_diagnostic_builder_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+    calls = {"facts": 0, "diagnostics": 0}
+
+    def fake_build_metric_facts(records, direction, *, recent_window):
+        calls["facts"] += 1
+        return {"record_count": len(records)}
+
+    def fake_build_metric_diagnostics(facts):
+        calls["diagnostics"] += 1
+        return ()
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_facts",
+        fake_build_metric_facts,
+    )
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_diagnostics",
+        fake_build_metric_diagnostics,
+    )
+
+    _build_summary(include_diagnostics=True)
+
+    assert calls == {"facts": 2, "diagnostics": 2}
+
+
+def test_diagnostic_to_dict_called_for_every_generated_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+    first = object()
+    second = object()
+    received: list[object] = []
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_facts",
+        lambda records, direction, *, recent_window: {},
+    )
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_diagnostics",
+        lambda facts: (first, second),
+    )
+
+    def fake_diagnostic_to_dict(item):
+        received.append(item)
+        return {"serialized": True}
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "diagnostic_to_dict",
+        fake_diagnostic_to_dict,
+    )
+
+    summary = _build_summary(include_diagnostics=True)
+
+    assert received == [first, second, first, second]
+    assert summary["diagnostics"]["metrics"]["r2"]["diagnostics"] == [
+        {"serialized": True},
+        {"serialized": True},
+    ]
+
+
+def test_dynamic_diagnostics_preserves_metric_spec_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _dynamic_history())
+    specs = (_loss_spec(), _metric_spec())
+
+    summary = _build_summary(specs, include_diagnostics=True)
+
+    assert list(summary["validation_metrics"]) == ["loss", "accuracy"]
+    assert list(summary["diagnostics"]["metrics"]) == ["loss", "accuracy"]
+
+
+def test_dynamic_diagnostics_preserves_validation_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _dynamic_history())
+    specs = (_metric_spec(), _loss_spec())
+
+    without_diagnostics = _build_summary(specs)
+    with_diagnostics = _build_summary(specs, include_diagnostics=True)
+
+    assert (
+        with_diagnostics["validation_metrics"]
+        == without_diagnostics["validation_metrics"]
+    )
+
+
+def test_dynamic_minimize_diagnostics_use_direction_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = {
+        "validation": {
+            "metrics": {
+                "loss": [[0, 0.8], [1, 0.6], [2, 0.4]],
+            },
+        },
+    }
+    _patch_inputs(monkeypatch, history)
+
+    summary = _build_summary([_loss_spec()], include_diagnostics=True)
+    metric = summary["diagnostics"]["metrics"]["loss"]
+
+    assert metric["facts"]["improvement_from_first"] == pytest.approx(0.4)
+    assert metric["facts"]["regression_from_best"] == pytest.approx(0.0)
+    assert metric["facts"]["recent_trend"] == "improving"
+    assert "best_at_last_record" in _diagnostic_codes(summary, "loss")
+    assert "recent_improvement" in _diagnostic_codes(summary, "loss")
+    assert "post_best_regression" not in _diagnostic_codes(summary, "loss")
+
+
+def test_dynamic_path_is_extracted_once_and_records_identity_is_reused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = _dynamic_history()
+    _patch_inputs(monkeypatch, history)
+    records = history["validation"]["metrics"]["accuracy"]
+    calls = {"path": 0, "evaluation": 0, "facts": 0, "diagnostics": 0}
+    identities: dict[str, object] = {}
+
+    def fake_get_value_at_path(data, path):
+        calls["path"] += 1
+        return records
+
+    def fake_evaluate_metric_history(received_records, direction):
+        calls["evaluation"] += 1
+        identities["evaluation"] = received_records
+        return {
+            "record_count": 3,
+            "first_epoch": 0,
+            "first_value": 0.7,
+            "last_epoch": 2,
+            "last_value": 0.75,
+            "best_epoch": 1,
+            "best_value": 0.8,
+        }
+
+    def fake_build_metric_facts(
+        received_records,
+        direction,
+        *,
+        recent_window,
+    ):
+        calls["facts"] += 1
+        identities["facts"] = received_records
+        identities["direction"] = direction
+        identities["window"] = recent_window
+        return {"record_count": 3}
+
+    def fake_build_metric_diagnostics(facts):
+        calls["diagnostics"] += 1
+        return ()
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "get_value_at_path",
+        fake_get_value_at_path,
+    )
+    monkeypatch.setattr(
+        summarize_experiment,
+        "evaluate_metric_history",
+        fake_evaluate_metric_history,
+    )
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_facts",
+        fake_build_metric_facts,
+    )
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_diagnostics",
+        fake_build_metric_diagnostics,
+    )
+
+    _build_summary(
+        [_metric_spec()],
+        include_diagnostics=True,
+        diagnostic_recent_window=2,
+    )
+
+    assert calls == {
+        "path": 1,
+        "evaluation": 1,
+        "facts": 1,
+        "diagnostics": 1,
+    }
+    assert identities["evaluation"] is records
+    assert identities["facts"] is records
+    assert identities["direction"] == "maximize"
+    assert identities["window"] == 2
+
+
+def test_dynamic_multiple_metrics_have_exact_call_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _dynamic_history())
+    calls = {"path": 0, "evaluation": 0, "facts": 0, "diagnostics": 0}
+    original_get = summarize_experiment.get_value_at_path
+    original_evaluate = summarize_experiment.evaluate_metric_history
+    original_facts = summarize_experiment.build_metric_facts
+    original_diagnostics = summarize_experiment.build_metric_diagnostics
+
+    def counted_get(*args, **kwargs):
+        calls["path"] += 1
+        return original_get(*args, **kwargs)
+
+    def counted_evaluate(*args, **kwargs):
+        calls["evaluation"] += 1
+        return original_evaluate(*args, **kwargs)
+
+    def counted_facts(*args, **kwargs):
+        calls["facts"] += 1
+        return original_facts(*args, **kwargs)
+
+    def counted_diagnostics(*args, **kwargs):
+        calls["diagnostics"] += 1
+        return original_diagnostics(*args, **kwargs)
+
+    monkeypatch.setattr(summarize_experiment, "get_value_at_path", counted_get)
+    monkeypatch.setattr(
+        summarize_experiment,
+        "evaluate_metric_history",
+        counted_evaluate,
+    )
+    monkeypatch.setattr(summarize_experiment, "build_metric_facts", counted_facts)
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_diagnostics",
+        counted_diagnostics,
+    )
+
+    _build_summary(
+        [_metric_spec(), _loss_spec()],
+        include_diagnostics=True,
+    )
+
+    assert calls == {
+        "path": 2,
+        "evaluation": 2,
+        "facts": 2,
+        "diagnostics": 2,
+    }
+
+
+def test_dynamic_diagnostics_omit_metric_spec_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _dynamic_history())
+
+    entry = _build_summary(
+        [_metric_spec()],
+        include_diagnostics=True,
+    )["diagnostics"]["metrics"]["accuracy"]
+    serialized = json.dumps(entry)
+
+    for field in ("direction", "display_name", "path", "precision", "metric_name"):
+        assert f'"{field}"' not in serialized
+
+
+def test_dynamic_diagnostics_summary_is_json_serializable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _dynamic_history())
+
+    summary = _build_summary(
+        [_metric_spec(), _loss_spec()],
+        include_diagnostics=True,
+    )
+
+    assert json.loads(json.dumps(summary, allow_nan=False)) == summary
+
+
+def test_dynamic_diagnostics_does_not_modify_specs_or_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = _dynamic_history()
+    original_history = deepcopy(history)
+    specs = (_metric_spec(), _loss_spec())
+    original_specs = deepcopy(specs)
+    _patch_inputs(monkeypatch, history)
+
+    _build_summary(specs, include_diagnostics=True)
+
+    assert history == original_history
+    assert specs == original_specs
+    assert specs[0].path == original_specs[0].path
+
+
+@pytest.mark.parametrize("recent_window", [5, 2, 20])
+def test_diagnostic_recent_window_is_preserved_in_each_metric_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    recent_window: int,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    metrics = _build_summary(
+        include_diagnostics=True,
+        diagnostic_recent_window=recent_window,
+    )["diagnostics"]["metrics"]
+
+    assert metrics["r2"]["facts"]["recent_window_requested"] == recent_window
+    assert (
+        metrics["racc"]["facts"]["recent_window_requested"]
+        == recent_window
+    )
+
+
+@pytest.mark.parametrize(
+    ("invalid_window", "error_type", "message"),
+    [
+        (True, TypeError, "recent_window must be an integer"),
+        (1, ValueError, "recent_window must be at least 2"),
+    ],
+)
+def test_enabled_diagnostics_propagates_recent_window_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_window,
+    error_type,
+    message: str,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    with pytest.raises(error_type, match=f"^{message}$"):
+        _build_summary(
+            include_diagnostics=True,
+            diagnostic_recent_window=invalid_window,
+        )
+
+
+def test_maximize_regression_real_integration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = {
+        "validation": {
+            "metrics": {
+                "accuracy": [[0, 0.5], [1, 0.8], [2, 0.7]],
+            },
+        },
+    }
+    _patch_inputs(monkeypatch, history)
+
+    summary = _build_summary([_metric_spec()], include_diagnostics=True)
+    facts = summary["diagnostics"]["metrics"]["accuracy"]["facts"]
+    codes = _diagnostic_codes(summary, "accuracy")
+
+    assert facts["regression_from_best"] == pytest.approx(0.1)
+    assert facts["best_record_index"] == 1
+    assert "post_best_regression" in codes
+    assert "recent_mixed" in codes
+
+
+def test_duplicate_and_non_monotonic_real_integration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = {
+        "validation": {
+            "metrics": {
+                "accuracy": [
+                    [0, 0.4],
+                    [2, 0.5],
+                    [2, 0.6],
+                    [1, 0.7],
+                ],
+            },
+        },
+    }
+    _patch_inputs(monkeypatch, history)
+
+    summary = _build_summary([_metric_spec()], include_diagnostics=True)
+    metric = summary["diagnostics"]["metrics"]["accuracy"]
+    diagnostics = {
+        item["code"]: item
+        for item in metric["diagnostics"]
+    }
+
+    assert metric["facts"]["duplicate_epochs"] == [2]
+    assert metric["facts"]["non_monotonic_epoch_transitions"] == [
+        {
+            "previous_record_index": 2,
+            "current_record_index": 3,
+            "previous_epoch": 2,
+            "current_epoch": 1,
+        }
+    ]
+    assert diagnostics["duplicate_epochs"]["evidence"] == {
+        "duplicate_epochs": [2]
+    }
+    assert diagnostics["non_monotonic_epochs"]["evidence"] == {
+        "transitions": metric["facts"]["non_monotonic_epoch_transitions"]
+    }
+
+
+def test_single_record_real_integration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = {
+        "validation": {
+            "metrics": {
+                "accuracy": [[7, 0.5]],
+            },
+        },
+    }
+    _patch_inputs(monkeypatch, history)
+
+    summary = _build_summary([_metric_spec()], include_diagnostics=True)
+    facts = summary["diagnostics"]["metrics"]["accuracy"]["facts"]
+    codes = _diagnostic_codes(summary, "accuracy")
+
+    assert facts["best_progress_ratio"] is None
+    assert codes == ["insufficient_history_for_trend"]
+    assert "best_at_first_record" not in codes
+    assert "best_at_last_record" not in codes
+    assert "no_improvement" not in codes
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "positive-infinity", "negative-infinity"],
+)
+def test_enabled_dynamic_diagnostics_propagates_non_finite_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+    value: float,
+) -> None:
+    history = {
+        "validation": {
+            "metrics": {
+                "accuracy": [[0, 0.5], [1, value]],
+            },
+        },
+    }
+    _patch_inputs(monkeypatch, history)
+
+    with pytest.raises(
+        ValueError,
+        match=r"^records\[1\]\[1\] must be finite$",
+    ):
+        _build_summary([_metric_spec()], include_diagnostics=True)
+
+
+def test_enabled_dynamic_diagnostics_propagates_missing_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, {"validation": {"metrics": {}}})
+
+    with pytest.raises(KeyError) as error:
+        _build_summary([_metric_spec()], include_diagnostics=True)
+
+    assert error.value.args == (
+        "missing key at path 'validation.metrics.accuracy'",
+    )
+
+
+def test_enabled_dynamic_diagnostics_propagates_non_mapping_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, {"validation": {"metrics": 1}})
+
+    with pytest.raises(
+        TypeError,
+        match="^value at path 'validation.metrics' must be a mapping$",
+    ):
+        _build_summary([_metric_spec()], include_diagnostics=True)
+
+
+def test_enabled_dynamic_diagnostics_propagates_invalid_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = {"validation": {"metrics": {"accuracy": [[0]]}}}
+    _patch_inputs(monkeypatch, history)
+
+    with pytest.raises(
+        ValueError,
+        match=r"^records\[0\] must contain exactly two items$",
+    ):
+        _build_summary([_metric_spec()], include_diagnostics=True)
+
+
+def test_build_metric_diagnostics_error_propagates_without_partial_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    def raise_key_error(facts):
+        raise KeyError("broken facts")
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_diagnostics",
+        raise_key_error,
+    )
+
+    with pytest.raises(KeyError) as error:
+        _build_summary(include_diagnostics=True)
+
+    assert error.value.args == ("broken facts",)
+
+
+def test_diagnostic_to_dict_error_propagates_without_partial_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+    diagnostic = Diagnostic("valid_code", "info", "Message", {})
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_diagnostics",
+        lambda facts: (diagnostic,),
+    )
+
+    def raise_type_error(item):
+        raise TypeError("serialization failed")
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "diagnostic_to_dict",
+        raise_type_error,
+    )
+
+    with pytest.raises(TypeError, match="^serialization failed$"):
+        _build_summary(include_diagnostics=True)
+
+
+def test_enabled_diagnostics_does_not_modify_config_or_default_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = _configuration()
+    history = _default_history()
+    original_configuration = deepcopy(configuration)
+    original_history = deepcopy(history)
+    _patch_inputs(monkeypatch, history, configuration)
+
+    _build_summary(include_diagnostics=True)
+
+    assert configuration == original_configuration
+    assert history == original_history
+
+
+def test_summary_keeps_exact_facts_object_returned_by_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+    facts_by_records: dict[int, dict[str, object]] = {}
+
+    def fake_build_metric_facts(records, direction, *, recent_window):
+        facts = {"record_count": len(records)}
+        facts_by_records[id(records)] = facts
+        return facts
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_facts",
+        fake_build_metric_facts,
+    )
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_metric_diagnostics",
+        lambda facts: (),
+    )
+
+    summary = _build_summary(include_diagnostics=True)
+    history = _default_history()
+
+    r2_facts = summary["diagnostics"]["metrics"]["r2"]["facts"]
+    racc_facts = summary["diagnostics"]["metrics"]["racc"]["facts"]
+    assert r2_facts in facts_by_records.values()
+    assert racc_facts in facts_by_records.values()
+    assert r2_facts is not racc_facts
