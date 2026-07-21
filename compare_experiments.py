@@ -363,6 +363,46 @@ def _escape_markdown_cell(value: object) -> str:
     return text.replace("\n", "<br>").replace("|", "\\|")
 
 
+def _append_comparison_diagnostics_section(
+    report_lines: list[str],
+    payload: dict,
+) -> None:
+    """Append comparison diagnostics when the payload includes them."""
+    if "diagnostics" not in payload:
+        return
+
+    diagnostic_items = payload["diagnostics"]["diagnostics"]
+    report_lines.extend(
+        [
+            "",
+            "## Diagnostics",
+            "",
+            "| Severity | Code | Message | Evidence |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+
+    if not diagnostic_items:
+        report_lines.append(
+            "| — | — | No diagnostic findings were generated. | — |"
+        )
+        return
+
+    for diagnostic in diagnostic_items:
+        evidence_text = json.dumps(
+            diagnostic["evidence"],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        report_lines.append(
+            "| "
+            f"{_escape_markdown_cell(diagnostic['severity'])} | "
+            f"`{_escape_markdown_cell(diagnostic['code'])}` | "
+            f"{_escape_markdown_cell(diagnostic['message'])} | "
+            f"`{_escape_markdown_cell(evidence_text)}` |"
+        )
+
+
 def build_comparison_markdown(payload: dict) -> str:
     """Build a Markdown report from a multi-experiment payload."""
     counts = payload["experiment_counts"]
@@ -467,6 +507,7 @@ def build_comparison_markdown(payload: dict) -> str:
                 f'{_escape_markdown_cell(experiment["error_message"])} |'
             )
 
+    _append_comparison_diagnostics_section(report_lines, payload)
     return "\n".join(report_lines) + "\n"
 
 
@@ -522,8 +563,13 @@ def run_comparison_pipeline(
     descending: bool = True,
     markdown_output_path: Path | None = None,
     metric_specs: Sequence[MetricSpec] | None = None,
+    *,
+    include_diagnostics: bool = False,
 ) -> dict:
     """总是写入 JSON，可选写入 Markdown，并返回实验对比载荷。"""
+    if not isinstance(include_diagnostics, bool):
+        raise TypeError("include_diagnostics must be a boolean")
+
     validated_metric_specs = (
         None
         if metric_specs is None
@@ -536,22 +582,39 @@ def run_comparison_pipeline(
         batch_result = analyze_experiment_dirs(
             experiment_dirs
         )
-        payload = build_comparison_payload(
-            batch_result,
-            sort_by=sort_by,
-            descending=descending,
-        )
+        if include_diagnostics:
+            payload = build_comparison_payload(
+                batch_result,
+                sort_by=sort_by,
+                descending=descending,
+                include_diagnostics=True,
+            )
+        else:
+            payload = build_comparison_payload(
+                batch_result,
+                sort_by=sort_by,
+                descending=descending,
+            )
     else:
         batch_result = analyze_experiment_dirs(
             experiment_dirs,
             metric_specs=validated_metric_specs,
         )
-        payload = build_comparison_payload(
-            batch_result,
-            sort_by=sort_by,
-            descending=descending,
-            metric_specs=validated_metric_specs,
-        )
+        if include_diagnostics:
+            payload = build_comparison_payload(
+                batch_result,
+                sort_by=sort_by,
+                descending=descending,
+                metric_specs=validated_metric_specs,
+                include_diagnostics=True,
+            )
+        else:
+            payload = build_comparison_payload(
+                batch_result,
+                sort_by=sort_by,
+                descending=descending,
+                metric_specs=validated_metric_specs,
+            )
     write_comparison_json(
         payload,
         output_path,
@@ -612,6 +675,11 @@ def parse_args(
         action="store_true",
         help="按指定指标升序排列",
     )
+    parser.add_argument(
+        "--include-diagnostics",
+        action="store_true",
+        help="在 JSON 和 Markdown 对比报告中加入规则诊断",
+    )
 
     return parser.parse_args(argv)
 
@@ -633,22 +701,43 @@ def main(
 
     try:
         if metric_specs is None:
-            payload = run_comparison_pipeline(
-                experiment_root=args.experiment_root,
-                output_path=args.output_path,
-                sort_by=resolved_sort_by,
-                descending=not args.ascending,
-                markdown_output_path=args.markdown_output_path,
-            )
+            if args.include_diagnostics:
+                payload = run_comparison_pipeline(
+                    experiment_root=args.experiment_root,
+                    output_path=args.output_path,
+                    sort_by=resolved_sort_by,
+                    descending=not args.ascending,
+                    markdown_output_path=args.markdown_output_path,
+                    include_diagnostics=True,
+                )
+            else:
+                payload = run_comparison_pipeline(
+                    experiment_root=args.experiment_root,
+                    output_path=args.output_path,
+                    sort_by=resolved_sort_by,
+                    descending=not args.ascending,
+                    markdown_output_path=args.markdown_output_path,
+                )
         else:
-            payload = run_comparison_pipeline(
-                experiment_root=args.experiment_root,
-                output_path=args.output_path,
-                sort_by=resolved_sort_by,
-                descending=not args.ascending,
-                markdown_output_path=args.markdown_output_path,
-                metric_specs=metric_specs,
-            )
+            if args.include_diagnostics:
+                payload = run_comparison_pipeline(
+                    experiment_root=args.experiment_root,
+                    output_path=args.output_path,
+                    sort_by=resolved_sort_by,
+                    descending=not args.ascending,
+                    markdown_output_path=args.markdown_output_path,
+                    metric_specs=metric_specs,
+                    include_diagnostics=True,
+                )
+            else:
+                payload = run_comparison_pipeline(
+                    experiment_root=args.experiment_root,
+                    output_path=args.output_path,
+                    sort_by=resolved_sort_by,
+                    descending=not args.ascending,
+                    markdown_output_path=args.markdown_output_path,
+                    metric_specs=metric_specs,
+                )
     except (FileNotFoundError, NotADirectoryError) as error:
         raise SystemExit(
             f"实验比较失败：{error}"
@@ -660,6 +749,8 @@ def main(
         print(f"没有找到有效实验目录：{args.experiment_root}")
         print(f"- JSON 输出：{args.output_path}")
         print(f"- Markdown 输出：{args.markdown_output_path}")
+        if args.include_diagnostics:
+            print("- 规则诊断：已启用")
         return
 
     sort_direction = "降序" if payload["descending"] else "升序"
@@ -670,6 +761,8 @@ def main(
     print(f"- 排序方式：{payload['sort_by']}（{sort_direction}）")
     print(f"- JSON 输出：{args.output_path}")
     print(f"- Markdown 输出：{args.markdown_output_path}")
+    if args.include_diagnostics:
+        print("- 规则诊断：已启用")
 
 
 if __name__ == "__main__":
