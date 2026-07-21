@@ -55,6 +55,11 @@ AI Agent, LLM application, RAG, and AI backend engineering roles.
 - Define general experiment metrics in an independent YAML file.
 - Select per-experiment best values with `maximize` or `minimize` semantics.
 - Generate dynamic JSON and Markdown comparisons for configured metrics.
+- Generate opt-in deterministic rule diagnostics for metric histories.
+- Generate opt-in deterministic recommendations from diagnostic codes.
+- Include diagnostics and recommendations in single-experiment and
+  multi-experiment JSON/Markdown reports.
+- Preserve legacy output schemas when diagnostics are not enabled.
 - Cover the comparison workflow with automated pytest tests.
 - Validate the full pytest suite automatically with GitHub Actions.
 - Run CI with Python 3.11 on `ubuntu-latest`.
@@ -80,10 +85,14 @@ multimodal-experiment-copilot/
 │   ├── comparison.json
 │   └── comparison.md
 ├── tests/
-│   └── test_compare_experiments.py
+│   ├── test_compare_experiments.py
+│   ├── test_diagnostics.py
+│   ├── test_generate_report.py
+│   └── test_summarize_experiment.py
 ├── .gitignore
 ├── README.md
 ├── compare_experiments.py
+├── diagnostics.py
 ├── generate_report.py
 ├── metrics.py
 ├── read_config.py
@@ -144,6 +153,14 @@ python generate_report.py --help
 ```bash
 python generate_report.py
 ```
+
+启用确定性规则诊断与建议：
+
+```bash
+python generate_report.py --include-diagnostics
+```
+
+不提供 `--include-diagnostics` 时，原有 JSON、Markdown 和 CLI 行为保持不变。
 
 Default experiment directory:
 
@@ -228,6 +245,8 @@ python compare_experiments.py `
 - `--metrics-config`：独立指标 YAML 配置文件路径；提供时启用动态指标模式。
 - `--sort-by`：默认模式使用 `best_r2` 或 `best_racc`；动态模式使用配置中的指标 `name`。
 - `--ascending`：出现时使用升序；未出现时使用降序。
+- `--include-diagnostics`：在 JSON 和 Markdown 中加入规则诊断与确定性建议；
+  未提供时保持原有输出结构。
 
 ### JSON 输出结构
 
@@ -480,6 +499,133 @@ JSON 保留指标历史评估结果中的记录数量、首尾值和最佳值，
 - 当前不支持 JSONPath、自动发现指标、由 `direction` 自动决定跨实验排序、
   图表生成或 Web UI。
 
+
+## Rule-based Diagnostics and Recommendations / 规则诊断与建议
+
+规则诊断和建议是显式启用的确定性功能，不调用 LLM，也不包含随机生成过程。
+相同的实验历史、指标方向、最近窗口和比较结果会产生相同的诊断与建议。
+
+### 启用方式
+
+单实验：
+
+```powershell
+python generate_report.py --include-diagnostics
+```
+
+多实验：
+
+```powershell
+python compare_experiments.py --include-diagnostics
+```
+
+该开关同时启用 diagnostics 和 recommendations。默认关闭时，不会在 JSON
+中加入 `diagnostics` 字段，也不会在 Markdown 中加入相应章节。
+
+### 单实验 JSON 结构
+
+每个指标分别保存事实、诊断和建议：
+
+```json
+{
+  "diagnostics": {
+    "metrics": {
+      "r2": {
+        "facts": {
+          "recent_trend": "degrading"
+        },
+        "diagnostics": [
+          {
+            "code": "post_best_regression",
+            "severity": "warning",
+            "message": "The final value is worse than the best recorded value.",
+            "evidence": {
+              "best_epoch": 18,
+              "last_epoch": 25
+            }
+          }
+        ],
+        "recommendations": [
+          {
+            "code": "restore_best_checkpoint",
+            "message": "Prefer the best checkpoint over the final checkpoint and review the cause of recent regression.",
+            "diagnostic_codes": [
+              "post_best_regression"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+单实验 Markdown 在原有内容之后追加：
+
+- `## 5. 规则诊断`
+- `## 6. 规则建议`
+
+### 多实验 JSON 结构
+
+多实验比较在顶层 `diagnostics` 载荷中保存比较事实、诊断和建议：
+
+```json
+{
+  "diagnostics": {
+    "facts": {
+      "successful_experiments": 1,
+      "failed_experiments": 0
+    },
+    "diagnostics": [
+      {
+        "code": "single_successful_experiment",
+        "severity": "info",
+        "message": "Only one experiment was analyzed successfully.",
+        "evidence": {
+          "successful_experiments": 1
+        }
+      }
+    ],
+    "recommendations": [
+      {
+        "code": "add_comparison_experiments",
+        "message": "Add more successful experiments before making comparative claims.",
+        "diagnostic_codes": [
+          "single_successful_experiment"
+        ]
+      }
+    ]
+  }
+}
+```
+
+多实验 Markdown 追加：
+
+- `## Diagnostics`
+- `## Recommendations`
+
+### 当前规则范围
+
+指标历史诊断包括：
+
+- 重复或非单调 Epoch；
+- 最佳值出现在首条或末条记录；
+- 未超过初始值；
+- 最终值相对最佳值回退；
+- 最近窗口改善、退化、持平、混合或数据不足。
+
+多实验比较诊断包括：
+
+- 没有成功实验；
+- 存在分析失败；
+- 只有一个成功实验；
+- 多个实验并列第一。
+
+建议由固定诊断代码映射生成，并会合并含义相近的触发条件。例如
+`post_best_regression` 和 `recent_degradation` 会合并为
+`restore_best_checkpoint`，避免输出重复建议。
+
+
 ## Generated Outputs
 
 ### Single-experiment report
@@ -497,6 +643,8 @@ The Markdown report currently includes:
 2. Module switches.
 3. Validation metric table.
 4. Automatic experiment analysis.
+5. Rule diagnostics when `--include-diagnostics` is enabled.
+6. Deterministic recommendations when `--include-diagnostics` is enabled.
 
 ### Multi-experiment comparison
 
@@ -520,6 +668,8 @@ The human-readable Markdown report contains:
 2. A ranked experiment table with best R² and RACC values and epochs in
    default mode, or configured metric columns in dynamic mode.
 3. A failed-experiment table when failures are present.
+4. A diagnostics table when `--include-diagnostics` is enabled.
+5. A deterministic recommendations table when diagnostics are enabled.
 
 ## Example Analysis
 
@@ -564,6 +714,10 @@ The project has been developed through small, verifiable Git commits:
 17. Document multi-experiment comparison usage.
 18. Build and write the multi-experiment Markdown comparison report.
 19. Integrate Markdown output into the comparison pipeline and CLI.
+20. Add metric-history and comparison diagnostic cores.
+21. Integrate opt-in diagnostics into summaries, JSON, Markdown, and CLIs.
+22. Add deterministic recommendations from diagnostic codes.
+23. Integrate recommendations into single- and multi-experiment reports.
 
 The complete evolution is available in the repository commit history.
 
@@ -582,6 +736,8 @@ The complete evolution is available in the repository commit history.
 - [x] Experiment comparison tables
 - [x] Multi-experiment Markdown comparison report
 - [x] Configurable experiment metrics from YAML
+- [x] Deterministic rule-based diagnostics
+- [x] Deterministic diagnostic recommendations
 - [ ] Trait-wise metric summaries
 - [ ] Configuration and schema validation
 - [x] Automated tests with `pytest`
@@ -603,6 +759,8 @@ Experiment Files
 Configuration and History Readers
       ↓
 Validation and Metric Analysis
+      ↓
+Rule Diagnostics and Deterministic Recommendations
       ↓
 Structured Experiment Summary
       ↓

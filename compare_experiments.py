@@ -3,6 +3,13 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from diagnostics import (
+    build_comparison_diagnostics,
+    build_comparison_facts,
+    build_recommendations,
+    diagnostic_to_dict,
+    recommendation_to_dict,
+)
 from metrics import MetricSpec
 from read_config import CONFIG_PATH
 from read_history import HISTORY_PATH
@@ -268,8 +275,13 @@ def build_comparison_payload(
     sort_by: str = "best_r2",
     descending: bool = True,
     metric_specs: Sequence[MetricSpec] | None = None,
+    *,
+    include_diagnostics: bool = False,
 ) -> dict:
     """构建包含排序记录、实验数量和失败信息的对比载荷。"""
+    if not isinstance(include_diagnostics, bool):
+        raise TypeError("include_diagnostics must be a boolean")
+
     if metric_specs is None:
         comparison_records = build_comparison_records(batch_result)
         ranked_records = rank_comparison_records(
@@ -321,17 +333,34 @@ def build_comparison_payload(
         "failed_experiments": batch_result["failed_experiments"],
     }
 
-    if serialized_metric_specs is None:
+    if serialized_metric_specs is not None:
+        payload = {
+            "sort_by": payload["sort_by"],
+            "descending": payload["descending"],
+            "metric_specs": serialized_metric_specs,
+            "experiment_counts": payload["experiment_counts"],
+            "comparison_records": payload["comparison_records"],
+            "failed_experiments": payload["failed_experiments"],
+        }
+
+    if not include_diagnostics:
         return payload
 
-    return {
-        "sort_by": payload["sort_by"],
-        "descending": payload["descending"],
-        "metric_specs": serialized_metric_specs,
-        "experiment_counts": payload["experiment_counts"],
-        "comparison_records": payload["comparison_records"],
-        "failed_experiments": payload["failed_experiments"],
+    facts = build_comparison_facts(payload)
+    diagnostics = build_comparison_diagnostics(facts)
+    recommendations = build_recommendations(diagnostics)
+    payload["diagnostics"] = {
+        "facts": facts,
+        "diagnostics": [
+            diagnostic_to_dict(diagnostic)
+            for diagnostic in diagnostics
+        ],
+        "recommendations": [
+            recommendation_to_dict(recommendation)
+            for recommendation in recommendations
+        ],
     }
+    return payload
 
 
 def _escape_markdown_cell(value: object) -> str:
@@ -339,6 +368,86 @@ def _escape_markdown_cell(value: object) -> str:
     text = str(value)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text.replace("\n", "<br>").replace("|", "\\|")
+
+
+def _append_comparison_diagnostics_section(
+    report_lines: list[str],
+    payload: dict,
+) -> None:
+    """Append comparison diagnostics when the payload includes them."""
+    if "diagnostics" not in payload:
+        return
+
+    diagnostic_items = payload["diagnostics"]["diagnostics"]
+    report_lines.extend(
+        [
+            "",
+            "## Diagnostics",
+            "",
+            "| Severity | Code | Message | Evidence |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+
+    if not diagnostic_items:
+        report_lines.append(
+            "| — | — | No diagnostic findings were generated. | — |"
+        )
+        return
+
+    for diagnostic in diagnostic_items:
+        evidence_text = json.dumps(
+            diagnostic["evidence"],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        report_lines.append(
+            "| "
+            f"{_escape_markdown_cell(diagnostic['severity'])} | "
+            f"`{_escape_markdown_cell(diagnostic['code'])}` | "
+            f"{_escape_markdown_cell(diagnostic['message'])} | "
+            f"`{_escape_markdown_cell(evidence_text)}` |"
+        )
+
+
+def _append_comparison_recommendations_section(
+    report_lines: list[str],
+    payload: dict,
+) -> None:
+    """Append deterministic recommendations when available."""
+    diagnostic_payload = payload.get("diagnostics")
+    if not isinstance(diagnostic_payload, dict):
+        return
+    if "recommendations" not in diagnostic_payload:
+        return
+
+    recommendation_items = diagnostic_payload["recommendations"]
+    report_lines.extend(
+        [
+            "",
+            "## Recommendations",
+            "",
+            "| Code | Recommendation | Triggered Diagnostics |",
+            "| --- | --- | --- |",
+        ]
+    )
+
+    if not recommendation_items:
+        report_lines.append(
+            "| — | No recommendations were generated. | — |"
+        )
+        return
+
+    for recommendation in recommendation_items:
+        trigger_text = ", ".join(
+            recommendation["diagnostic_codes"]
+        )
+        report_lines.append(
+            "| "
+            f"`{_escape_markdown_cell(recommendation['code'])}` | "
+            f"{_escape_markdown_cell(recommendation['message'])} | "
+            f"`{_escape_markdown_cell(trigger_text)}` |"
+        )
 
 
 def build_comparison_markdown(payload: dict) -> str:
@@ -445,6 +554,8 @@ def build_comparison_markdown(payload: dict) -> str:
                 f'{_escape_markdown_cell(experiment["error_message"])} |'
             )
 
+    _append_comparison_diagnostics_section(report_lines, payload)
+    _append_comparison_recommendations_section(report_lines, payload)
     return "\n".join(report_lines) + "\n"
 
 
@@ -500,8 +611,13 @@ def run_comparison_pipeline(
     descending: bool = True,
     markdown_output_path: Path | None = None,
     metric_specs: Sequence[MetricSpec] | None = None,
+    *,
+    include_diagnostics: bool = False,
 ) -> dict:
     """总是写入 JSON，可选写入 Markdown，并返回实验对比载荷。"""
+    if not isinstance(include_diagnostics, bool):
+        raise TypeError("include_diagnostics must be a boolean")
+
     validated_metric_specs = (
         None
         if metric_specs is None
@@ -514,22 +630,39 @@ def run_comparison_pipeline(
         batch_result = analyze_experiment_dirs(
             experiment_dirs
         )
-        payload = build_comparison_payload(
-            batch_result,
-            sort_by=sort_by,
-            descending=descending,
-        )
+        if include_diagnostics:
+            payload = build_comparison_payload(
+                batch_result,
+                sort_by=sort_by,
+                descending=descending,
+                include_diagnostics=True,
+            )
+        else:
+            payload = build_comparison_payload(
+                batch_result,
+                sort_by=sort_by,
+                descending=descending,
+            )
     else:
         batch_result = analyze_experiment_dirs(
             experiment_dirs,
             metric_specs=validated_metric_specs,
         )
-        payload = build_comparison_payload(
-            batch_result,
-            sort_by=sort_by,
-            descending=descending,
-            metric_specs=validated_metric_specs,
-        )
+        if include_diagnostics:
+            payload = build_comparison_payload(
+                batch_result,
+                sort_by=sort_by,
+                descending=descending,
+                metric_specs=validated_metric_specs,
+                include_diagnostics=True,
+            )
+        else:
+            payload = build_comparison_payload(
+                batch_result,
+                sort_by=sort_by,
+                descending=descending,
+                metric_specs=validated_metric_specs,
+            )
     write_comparison_json(
         payload,
         output_path,
@@ -590,6 +723,11 @@ def parse_args(
         action="store_true",
         help="按指定指标升序排列",
     )
+    parser.add_argument(
+        "--include-diagnostics",
+        action="store_true",
+        help="在 JSON 和 Markdown 对比报告中加入规则诊断与建议",
+    )
 
     return parser.parse_args(argv)
 
@@ -611,22 +749,43 @@ def main(
 
     try:
         if metric_specs is None:
-            payload = run_comparison_pipeline(
-                experiment_root=args.experiment_root,
-                output_path=args.output_path,
-                sort_by=resolved_sort_by,
-                descending=not args.ascending,
-                markdown_output_path=args.markdown_output_path,
-            )
+            if args.include_diagnostics:
+                payload = run_comparison_pipeline(
+                    experiment_root=args.experiment_root,
+                    output_path=args.output_path,
+                    sort_by=resolved_sort_by,
+                    descending=not args.ascending,
+                    markdown_output_path=args.markdown_output_path,
+                    include_diagnostics=True,
+                )
+            else:
+                payload = run_comparison_pipeline(
+                    experiment_root=args.experiment_root,
+                    output_path=args.output_path,
+                    sort_by=resolved_sort_by,
+                    descending=not args.ascending,
+                    markdown_output_path=args.markdown_output_path,
+                )
         else:
-            payload = run_comparison_pipeline(
-                experiment_root=args.experiment_root,
-                output_path=args.output_path,
-                sort_by=resolved_sort_by,
-                descending=not args.ascending,
-                markdown_output_path=args.markdown_output_path,
-                metric_specs=metric_specs,
-            )
+            if args.include_diagnostics:
+                payload = run_comparison_pipeline(
+                    experiment_root=args.experiment_root,
+                    output_path=args.output_path,
+                    sort_by=resolved_sort_by,
+                    descending=not args.ascending,
+                    markdown_output_path=args.markdown_output_path,
+                    metric_specs=metric_specs,
+                    include_diagnostics=True,
+                )
+            else:
+                payload = run_comparison_pipeline(
+                    experiment_root=args.experiment_root,
+                    output_path=args.output_path,
+                    sort_by=resolved_sort_by,
+                    descending=not args.ascending,
+                    markdown_output_path=args.markdown_output_path,
+                    metric_specs=metric_specs,
+                )
     except (FileNotFoundError, NotADirectoryError) as error:
         raise SystemExit(
             f"实验比较失败：{error}"
@@ -638,6 +797,8 @@ def main(
         print(f"没有找到有效实验目录：{args.experiment_root}")
         print(f"- JSON 输出：{args.output_path}")
         print(f"- Markdown 输出：{args.markdown_output_path}")
+        if args.include_diagnostics:
+            print("- 规则诊断：已启用")
         return
 
     sort_direction = "降序" if payload["descending"] else "升序"
@@ -648,6 +809,8 @@ def main(
     print(f"- 排序方式：{payload['sort_by']}（{sort_direction}）")
     print(f"- JSON 输出：{args.output_path}")
     print(f"- Markdown 输出：{args.markdown_output_path}")
+    if args.include_diagnostics:
+        print("- 规则诊断：已启用")
 
 
 if __name__ == "__main__":

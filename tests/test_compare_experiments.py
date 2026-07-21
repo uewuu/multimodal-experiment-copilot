@@ -1,11 +1,13 @@
 import json
 from copy import deepcopy
+from inspect import Parameter, signature
 from pathlib import Path
 
 import pytest
 import yaml
 
 import compare_experiments
+from diagnostics import Diagnostic, Recommendation
 from metrics import MetricSpec
 from compare_experiments import (
     DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH,
@@ -2920,6 +2922,7 @@ def test_parse_args_namespace_contains_all_cli_fields() -> None:
         "metrics_config",
         "sort_by",
         "ascending",
+        "include_diagnostics",
     }
 
 
@@ -3348,3 +3351,1409 @@ def test_dynamic_metrics_cli_end_to_end_writes_ranked_json_and_markdown(
     assert markdown_text.index("experiment_b") < markdown_text.index(
         "experiment_a"
     )
+
+# ---------------------------------------------------------------------------
+# Stage 9C-2: opt-in comparison payload diagnostics
+# ---------------------------------------------------------------------------
+
+
+def test_build_comparison_payload_diagnostics_parameters_are_keyword_only():
+    parameters = signature(build_comparison_payload).parameters
+
+    assert parameters["include_diagnostics"].kind is Parameter.KEYWORD_ONLY
+    assert parameters["include_diagnostics"].default is False
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [0, 1, None, "true", [], {}],
+)
+def test_build_comparison_payload_rejects_non_boolean_include_diagnostics(
+    invalid_value,
+):
+    batch_result = {
+        "successful_experiments": [],
+        "failed_experiments": [],
+    }
+
+    with pytest.raises(
+        TypeError,
+        match="^include_diagnostics must be a boolean$",
+    ):
+        build_comparison_payload(
+            batch_result,
+            include_diagnostics=invalid_value,
+        )
+
+
+def test_default_payload_is_exactly_unchanged_when_diagnostics_omitted():
+    batch_result = {
+        "successful_experiments": [
+            make_successful_experiment("experiment_a", 0.7, 0.93)
+        ],
+        "failed_experiments": [],
+    }
+
+    payload = build_comparison_payload(batch_result)
+
+    assert list(payload) == [
+        "sort_by",
+        "descending",
+        "experiment_counts",
+        "comparison_records",
+        "failed_experiments",
+    ]
+    assert "diagnostics" not in payload
+
+
+def test_default_payload_is_exactly_unchanged_when_diagnostics_disabled():
+    batch_result = {
+        "successful_experiments": [
+            make_successful_experiment("experiment_a", 0.7, 0.93)
+        ],
+        "failed_experiments": [],
+    }
+
+    implicit = build_comparison_payload(batch_result)
+    explicit = build_comparison_payload(
+        batch_result,
+        include_diagnostics=False,
+    )
+
+    assert explicit == implicit
+    assert list(explicit) == list(implicit)
+
+
+def test_dynamic_payload_is_exactly_unchanged_when_diagnostics_disabled():
+    batch_result = dynamic_batch_result()
+
+    implicit = build_comparison_payload(
+        batch_result,
+        sort_by="validation_loss",
+        descending=False,
+        metric_specs=configurable_metric_specs(),
+    )
+    explicit = build_comparison_payload(
+        batch_result,
+        sort_by="validation_loss",
+        descending=False,
+        metric_specs=configurable_metric_specs(),
+        include_diagnostics=False,
+    )
+
+    assert explicit == implicit
+    assert list(explicit) == [
+        "sort_by",
+        "descending",
+        "metric_specs",
+        "experiment_counts",
+        "comparison_records",
+        "failed_experiments",
+    ]
+
+
+def test_disabled_diagnostics_do_not_call_diagnostic_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_if_called(*args: object, **kwargs: object) -> object:
+        pytest.fail("diagnostic helpers must not run when disabled")
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_facts",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_diagnostics",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_recommendations",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "diagnostic_to_dict",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "recommendation_to_dict",
+        fail_if_called,
+    )
+
+    payload = build_comparison_payload(
+        {"successful_experiments": [], "failed_experiments": []},
+        include_diagnostics=False,
+    )
+
+    assert "diagnostics" not in payload
+
+
+def test_enabled_default_payload_appends_diagnostics_field():
+    payload = build_comparison_payload(
+        {
+            "successful_experiments": [
+                make_successful_experiment("experiment_a", 0.7, 0.93)
+            ],
+            "failed_experiments": [],
+        },
+        include_diagnostics=True,
+    )
+
+    assert list(payload) == [
+        "sort_by",
+        "descending",
+        "experiment_counts",
+        "comparison_records",
+        "failed_experiments",
+        "diagnostics",
+    ]
+    assert list(payload["diagnostics"]) == [
+        "facts",
+        "diagnostics",
+        "recommendations",
+    ]
+
+
+def test_enabled_dynamic_payload_appends_diagnostics_after_legacy_fields():
+    payload = build_comparison_payload(
+        dynamic_batch_result(),
+        sort_by="validation_loss",
+        descending=False,
+        metric_specs=configurable_metric_specs(),
+        include_diagnostics=True,
+    )
+
+    assert list(payload) == [
+        "sort_by",
+        "descending",
+        "metric_specs",
+        "experiment_counts",
+        "comparison_records",
+        "failed_experiments",
+        "diagnostics",
+    ]
+
+
+def test_enabled_payload_uses_plain_json_friendly_diagnostic_data():
+    payload = build_comparison_payload(
+        {
+            "successful_experiments": [
+                make_successful_experiment("experiment_a", 0.7, 0.93)
+            ],
+            "failed_experiments": [],
+        },
+        include_diagnostics=True,
+    )
+
+    diagnostic_payload = payload["diagnostics"]
+
+    assert type(diagnostic_payload) is dict
+    assert type(diagnostic_payload["facts"]) is dict
+    assert type(diagnostic_payload["diagnostics"]) is list
+    assert all(
+        type(diagnostic) is dict
+        for diagnostic in diagnostic_payload["diagnostics"]
+    )
+    assert type(diagnostic_payload["recommendations"]) is list
+    assert all(
+        type(recommendation) is dict
+        for recommendation in diagnostic_payload["recommendations"]
+    )
+    assert json.loads(
+        json.dumps(payload, allow_nan=False)
+    ) == payload
+
+
+def test_enabled_payload_adds_recommendations_under_diagnostics():
+    payload = build_comparison_payload(
+        {"successful_experiments": [], "failed_experiments": []},
+        include_diagnostics=True,
+    )
+
+    assert "recommendations" not in payload
+    assert [
+        item["code"]
+        for item in payload["diagnostics"]["recommendations"]
+    ] == ["resolve_analysis_failures"]
+
+
+def test_empty_batch_includes_no_successful_experiments_diagnostic():
+    payload = build_comparison_payload(
+        {"successful_experiments": [], "failed_experiments": []},
+        include_diagnostics=True,
+    )
+
+    assert [
+        item["code"]
+        for item in payload["diagnostics"]["diagnostics"]
+    ] == ["no_successful_experiments"]
+
+
+def test_all_failed_batch_includes_failure_diagnostics_in_stable_order():
+    failed_experiments = [
+        {
+            "experiment_name": "broken_a",
+            "experiment_dir": "experiments/broken_a",
+            "error_type": "ValueError",
+            "error_message": "invalid history",
+        },
+        {
+            "experiment_name": "broken_b",
+            "experiment_dir": "experiments/broken_b",
+            "error_type": "RuntimeError",
+            "error_message": "analysis failed",
+        },
+    ]
+    payload = build_comparison_payload(
+        {
+            "successful_experiments": [],
+            "failed_experiments": failed_experiments,
+        },
+        include_diagnostics=True,
+    )
+
+    assert [
+        item["code"]
+        for item in payload["diagnostics"]["diagnostics"]
+    ] == [
+        "no_successful_experiments",
+        "failed_experiments_present",
+    ]
+    assert payload["diagnostics"]["facts"]["failed_experiments"] == 2
+
+
+def test_single_success_payload_includes_single_experiment_diagnostic():
+    payload = build_comparison_payload(
+        {
+            "successful_experiments": [
+                make_successful_experiment("only", 0.7, 0.93)
+            ],
+            "failed_experiments": [],
+        },
+        include_diagnostics=True,
+    )
+
+    assert [
+        item["code"]
+        for item in payload["diagnostics"]["diagnostics"]
+    ] == ["single_successful_experiment"]
+    assert payload["diagnostics"]["facts"]["top_experiment_name"] == "only"
+
+
+def test_tied_best_payload_includes_tied_best_diagnostic():
+    payload = build_comparison_payload(
+        {
+            "successful_experiments": [
+                make_successful_experiment("first", 0.8, 0.91),
+                make_successful_experiment("second", 0.8, 0.92),
+            ],
+            "failed_experiments": [],
+        },
+        include_diagnostics=True,
+    )
+
+    diagnostic = payload["diagnostics"]["diagnostics"][0]
+
+    assert diagnostic["code"] == "tied_best_experiments"
+    assert diagnostic["evidence"] == {
+        "sort_by": "best_r2",
+        "top_value": 0.8,
+        "experiment_names": ["first", "second"],
+    }
+
+
+def test_dynamic_ascending_payload_uses_ranked_metric_facts():
+    payload = build_comparison_payload(
+        dynamic_batch_result(),
+        sort_by="validation_loss",
+        descending=False,
+        metric_specs=configurable_metric_specs(),
+        include_diagnostics=True,
+    )
+
+    facts = payload["diagnostics"]["facts"]
+
+    assert facts["sort_by"] == "validation_loss"
+    assert facts["descending"] is False
+    assert facts["top_experiment_name"] == "experiment_b"
+    assert facts["top_value"] == 1
+    assert facts["second_experiment_name"] == "experiment_a"
+    assert facts["top_vs_second_gap"] == 1
+
+
+def test_enabled_payload_does_not_modify_batch_result():
+    batch_result = dynamic_batch_result()
+    original_batch_result = deepcopy(batch_result)
+
+    build_comparison_payload(
+        batch_result,
+        sort_by="accuracy",
+        metric_specs=configurable_metric_specs(),
+        include_diagnostics=True,
+    )
+
+    assert batch_result == original_batch_result
+
+
+def test_diagnostic_helpers_receive_final_payload_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    batch_result = {
+        "successful_experiments": [],
+        "failed_experiments": [],
+    }
+    calls: list[tuple[str, object]] = []
+    expected_facts = {"fact": 1}
+    diagnostic = Diagnostic(
+        "synthetic_diagnostic",
+        "info",
+        "Synthetic diagnostic.",
+        {},
+    )
+    recommendation = Recommendation(
+        "synthetic_recommendation",
+        "Synthetic recommendation.",
+        ("synthetic_diagnostic",),
+    )
+
+    def fake_build_facts(payload: dict) -> dict:
+        calls.append(("facts", payload))
+        assert "diagnostics" not in payload
+        return expected_facts
+
+    def fake_build_diagnostics(facts: dict):
+        calls.append(("diagnostics", facts))
+        return (diagnostic,)
+
+    def fake_build_recommendations(diagnostics):
+        calls.append(("recommendations", diagnostics))
+        return (recommendation,)
+
+    def fake_serialize_diagnostic(item):
+        calls.append(("serialize_diagnostic", item))
+        return {
+            "code": item.code,
+            "severity": item.severity,
+            "message": item.message,
+            "evidence": {},
+        }
+
+    def fake_serialize_recommendation(item):
+        calls.append(("serialize_recommendation", item))
+        return {
+            "code": item.code,
+            "message": item.message,
+            "diagnostic_codes": list(item.diagnostic_codes),
+        }
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_facts",
+        fake_build_facts,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_diagnostics",
+        fake_build_diagnostics,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_recommendations",
+        fake_build_recommendations,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "diagnostic_to_dict",
+        fake_serialize_diagnostic,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "recommendation_to_dict",
+        fake_serialize_recommendation,
+    )
+
+    payload = build_comparison_payload(
+        batch_result,
+        include_diagnostics=True,
+    )
+
+    assert calls == [
+        ("facts", calls[0][1]),
+        ("diagnostics", expected_facts),
+        ("recommendations", (diagnostic,)),
+        ("serialize_diagnostic", diagnostic),
+        ("serialize_recommendation", recommendation),
+    ]
+    assert payload["diagnostics"]["facts"] is expected_facts
+    assert payload["diagnostics"]["recommendations"][0]["code"] == (
+        "synthetic_recommendation"
+    )
+
+
+def test_diagnostic_facts_error_propagates_without_serialization(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    expected_error = ValueError("invalid comparison facts")
+
+    def raise_facts_error(payload: dict) -> dict:
+        raise expected_error
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_facts",
+        raise_facts_error,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_diagnostics",
+        lambda facts: pytest.fail(
+            "diagnostics must not run after facts fail"
+        ),
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "diagnostic_to_dict",
+        lambda diagnostic: pytest.fail(
+            "serialization must not run after facts fail"
+        ),
+    )
+
+    with pytest.raises(ValueError) as error_info:
+        build_comparison_payload(
+            {"successful_experiments": [], "failed_experiments": []},
+            include_diagnostics=True,
+        )
+
+    assert error_info.value is expected_error
+
+
+def test_comparison_diagnostics_error_propagates_without_serialization(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    expected_error = KeyError("missing diagnostic fact")
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_facts",
+        lambda payload: {"fact": 1},
+    )
+
+    def raise_diagnostic_error(facts: dict) -> tuple:
+        raise expected_error
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_diagnostics",
+        raise_diagnostic_error,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "diagnostic_to_dict",
+        lambda diagnostic: pytest.fail(
+            "serialization must not run after diagnostics fail"
+        ),
+    )
+
+    with pytest.raises(KeyError) as error_info:
+        build_comparison_payload(
+            {"successful_experiments": [], "failed_experiments": []},
+            include_diagnostics=True,
+        )
+
+    assert error_info.value is expected_error
+
+
+def test_diagnostic_serialization_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    expected_error = TypeError("serialization failed")
+    diagnostic_sentinel = Diagnostic(
+        "synthetic_diagnostic",
+        "info",
+        "Synthetic diagnostic.",
+        {},
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_facts",
+        lambda payload: {"fact": 1},
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_diagnostics",
+        lambda facts: (diagnostic_sentinel,),
+    )
+
+    def raise_serialization_error(diagnostic: object) -> dict:
+        raise expected_error
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "diagnostic_to_dict",
+        raise_serialization_error,
+    )
+
+    with pytest.raises(TypeError) as error_info:
+        build_comparison_payload(
+            {"successful_experiments": [], "failed_experiments": []},
+            include_diagnostics=True,
+        )
+
+    assert error_info.value is expected_error
+
+
+def test_enabled_payload_can_be_written_and_read_as_json(
+    tmp_path: Path,
+):
+    payload = build_comparison_payload(
+        {
+            "successful_experiments": [
+                make_successful_experiment("experiment_a", 0.7, 0.93)
+            ],
+            "failed_experiments": [],
+        },
+        include_diagnostics=True,
+    )
+    output_path = tmp_path / "comparison-with-diagnostics.json"
+
+    write_comparison_json(payload, output_path)
+
+    assert json.loads(output_path.read_text(encoding="utf-8")) == payload
+
+
+def test_markdown_behavior_includes_diagnostics_for_diagnostic_payload():
+    payload = build_comparison_payload(
+        {
+            "successful_experiments": [
+                make_successful_experiment("experiment_a", 0.7, 0.93)
+            ],
+            "failed_experiments": [],
+        },
+        include_diagnostics=True,
+    )
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert "## Diagnostics" in markdown_text
+    assert "single_successful_experiment" in markdown_text
+
+
+def test_default_pipeline_still_omits_include_diagnostics_keyword(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    received: dict[str, object] = {}
+
+    def strict_payload_builder(
+        batch_result: dict,
+        *,
+        sort_by: str,
+        descending: bool,
+    ) -> dict:
+        received.update(
+            batch_result=batch_result,
+            sort_by=sort_by,
+            descending=descending,
+        )
+        return {
+            "sort_by": sort_by,
+            "descending": descending,
+            "experiment_counts": {
+                "total": 0,
+                "successful": 0,
+                "failed": 0,
+            },
+            "comparison_records": [],
+            "failed_experiments": [],
+        }
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        lambda root: [],
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "analyze_experiment_dirs",
+        lambda dirs: {
+            "successful_experiments": [],
+            "failed_experiments": [],
+        },
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        strict_payload_builder,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda payload, path: path,
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=None,
+    )
+
+    assert received["sort_by"] == "best_r2"
+    assert received["descending"] is True
+    assert "include_diagnostics" not in received
+
+# ---------------------------------------------------------------------------
+# Stage 9D-2: comparison diagnostics CLI, JSON, and Markdown integration
+# ---------------------------------------------------------------------------
+
+
+def comparison_diagnostics_payload(
+    diagnostics: list[dict] | None = None,
+) -> dict:
+    payload = markdown_payload()
+    payload["diagnostics"] = {
+        "facts": {
+            "total_experiments": 0,
+            "successful_experiments": 0,
+            "failed_experiments": 0,
+        },
+        "diagnostics": (
+            []
+            if diagnostics is None
+            else diagnostics
+        ),
+    }
+    return payload
+
+
+def test_run_comparison_pipeline_diagnostics_parameter_is_keyword_only():
+    parameters = signature(run_comparison_pipeline).parameters
+
+    assert parameters["include_diagnostics"].kind is Parameter.KEYWORD_ONLY
+    assert parameters["include_diagnostics"].default is False
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [0, 1, None, "true", [], {}],
+)
+def test_run_comparison_pipeline_rejects_non_boolean_include_diagnostics(
+    invalid_value,
+    tmp_path: Path,
+):
+    with pytest.raises(
+        TypeError,
+        match="^include_diagnostics must be a boolean$",
+    ):
+        run_comparison_pipeline(
+            tmp_path,
+            tmp_path / "comparison.json",
+            include_diagnostics=invalid_value,
+        )
+
+
+def test_parse_args_defaults_include_diagnostics_to_false():
+    args = parse_args([])
+
+    assert args.include_diagnostics is False
+
+
+def test_parse_args_accepts_include_diagnostics_flag():
+    args = parse_args(["--include-diagnostics"])
+
+    assert args.include_diagnostics is True
+
+
+def test_parse_args_help_describes_include_diagnostics(
+    capsys: pytest.CaptureFixture[str],
+):
+    with pytest.raises(SystemExit) as error_info:
+        parse_args(["--help"])
+
+    assert error_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--include-diagnostics" in help_text
+    assert "JSON 和 Markdown 对比报告" in help_text
+
+
+def test_default_markdown_remains_exactly_unchanged_without_diagnostics():
+    payload = markdown_payload()
+    expected = build_comparison_markdown(payload)
+
+    payload_with_unrelated_copy = deepcopy(payload)
+    actual = build_comparison_markdown(payload_with_unrelated_copy)
+
+    assert actual == expected
+    assert "## Diagnostics" not in actual
+
+
+def test_comparison_markdown_appends_diagnostics_section():
+    payload = comparison_diagnostics_payload(
+        [
+            {
+                "code": "no_successful_experiments",
+                "severity": "warning",
+                "message": "No successful experiments were available.",
+                "evidence": {"successful_experiments": 0},
+            }
+        ]
+    )
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert "## Diagnostics" in markdown_text
+    assert markdown_text.index("## Ranked Experiments") < (
+        markdown_text.index("## Diagnostics")
+    )
+
+
+def test_comparison_markdown_appends_diagnostics_after_failed_section():
+    payload = comparison_diagnostics_payload(
+        [
+            {
+                "code": "failed_experiments_present",
+                "severity": "warning",
+                "message": "Some experiments failed.",
+                "evidence": {"failed_experiments": 1},
+            }
+        ]
+    )
+    payload["failed_experiments"] = [
+        {
+            "experiment_name": "broken",
+            "experiment_dir": "examples/broken",
+            "error_type": "ValueError",
+            "error_message": "invalid history",
+        }
+    ]
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert markdown_text.index("## Failed Experiments") < (
+        markdown_text.index("## Diagnostics")
+    )
+
+
+def test_comparison_markdown_contains_stable_diagnostics_table():
+    payload = comparison_diagnostics_payload(
+        [
+            {
+                "code": "single_successful_experiment",
+                "severity": "info",
+                "message": "Only one experiment succeeded.",
+                "evidence": {"successful_experiments": 1},
+            }
+        ]
+    )
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert "| Severity | Code | Message | Evidence |" in markdown_text
+    assert "| --- | --- | --- | --- |" in markdown_text
+
+
+def test_comparison_markdown_preserves_diagnostic_order():
+    payload = comparison_diagnostics_payload(
+        [
+            {
+                "code": "first_rule",
+                "severity": "warning",
+                "message": "First message.",
+                "evidence": {"position": 1},
+            },
+            {
+                "code": "second_rule",
+                "severity": "info",
+                "message": "Second message.",
+                "evidence": {"position": 2},
+            },
+        ]
+    )
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert markdown_text.index("first_rule") < markdown_text.index(
+        "second_rule"
+    )
+
+
+def test_comparison_markdown_serializes_evidence_deterministically():
+    payload = comparison_diagnostics_payload(
+        [
+            {
+                "code": "ordered_evidence",
+                "severity": "info",
+                "message": "Evidence is ordered.",
+                "evidence": {"z": 2, "a": 1},
+            }
+        ]
+    )
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert '{"a": 1, "z": 2}' in markdown_text
+
+
+def test_comparison_markdown_escapes_diagnostic_table_content():
+    payload = comparison_diagnostics_payload(
+        [
+            {
+                "code": "code|with|pipes",
+                "severity": "warn|ing",
+                "message": "line one\nline two|tail",
+                "evidence": {"note": "left|right\nnext"},
+            }
+        ]
+    )
+
+    markdown_text = build_comparison_markdown(payload)
+
+    assert "code\\|with\\|pipes" in markdown_text
+    assert "warn\\|ing" in markdown_text
+    assert "line one<br>line two\\|tail" in markdown_text
+    assert "left\\|right" in markdown_text
+    assert "\\nnext" in markdown_text
+
+
+def test_comparison_markdown_handles_empty_diagnostic_list():
+    markdown_text = build_comparison_markdown(
+        comparison_diagnostics_payload()
+    )
+
+    assert "## Diagnostics" in markdown_text
+    assert "No diagnostic findings were generated." in markdown_text
+
+
+def test_comparison_markdown_does_not_modify_diagnostic_payload():
+    payload = comparison_diagnostics_payload(
+        [
+            {
+                "code": "single_successful_experiment",
+                "severity": "info",
+                "message": "Only one experiment succeeded.",
+                "evidence": {"successful_experiments": 1},
+            }
+        ]
+    )
+    original_payload = deepcopy(payload)
+
+    build_comparison_markdown(payload)
+
+    assert payload == original_payload
+
+
+def test_default_pipeline_keeps_legacy_payload_builder_call_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    received: dict[str, object] = {}
+
+    def strict_payload_builder(
+        batch_result: dict,
+        *,
+        sort_by: str,
+        descending: bool,
+    ) -> dict:
+        received.update(
+            batch_result=batch_result,
+            sort_by=sort_by,
+            descending=descending,
+        )
+        return markdown_payload()
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        lambda root: [],
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "analyze_experiment_dirs",
+        lambda dirs: {
+            "successful_experiments": [],
+            "failed_experiments": [],
+        },
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        strict_payload_builder,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda payload, path: path,
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=None,
+    )
+
+    assert "include_diagnostics" not in received
+
+
+def test_enabled_pipeline_passes_diagnostics_true_to_payload_builder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    received: dict[str, object] = {}
+
+    def fake_payload_builder(
+        batch_result: dict,
+        **kwargs: object,
+    ) -> dict:
+        received.update(kwargs)
+        return comparison_diagnostics_payload()
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        lambda root: [],
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "analyze_experiment_dirs",
+        lambda dirs: {
+            "successful_experiments": [],
+            "failed_experiments": [],
+        },
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        fake_payload_builder,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda payload, path: path,
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        markdown_output_path=None,
+        include_diagnostics=True,
+    )
+
+    assert received == {
+        "sort_by": "best_r2",
+        "descending": True,
+        "include_diagnostics": True,
+    }
+
+
+def test_enabled_dynamic_pipeline_passes_specs_and_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    specs = configurable_metric_specs()
+    received: dict[str, object] = {}
+
+    def fake_payload_builder(
+        batch_result: dict,
+        **kwargs: object,
+    ) -> dict:
+        received.update(kwargs)
+        return comparison_diagnostics_payload()
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        lambda root: [],
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "analyze_experiment_dirs",
+        lambda dirs, metric_specs: {
+            "successful_experiments": [],
+            "failed_experiments": [],
+        },
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        fake_payload_builder,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "write_comparison_json",
+        lambda payload, path: path,
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        tmp_path / "comparison.json",
+        sort_by="accuracy",
+        metric_specs=specs,
+        markdown_output_path=None,
+        include_diagnostics=True,
+    )
+
+    assert received["sort_by"] == "accuracy"
+    assert received["descending"] is True
+    assert received["metric_specs"] is specs
+    assert received["include_diagnostics"] is True
+
+
+def test_enabled_pipeline_writes_diagnostics_to_json_and_markdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    payload = comparison_diagnostics_payload(
+        [
+            {
+                "code": "no_successful_experiments",
+                "severity": "warning",
+                "message": "No successful experiments were available.",
+                "evidence": {"successful_experiments": 0},
+            }
+        ]
+    )
+    json_path = tmp_path / "comparison.json"
+    markdown_path = tmp_path / "comparison.md"
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        lambda root: [],
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "analyze_experiment_dirs",
+        lambda dirs: {
+            "successful_experiments": [],
+            "failed_experiments": [],
+        },
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        lambda batch_result, **kwargs: payload,
+    )
+
+    result = run_comparison_pipeline(
+        tmp_path,
+        json_path,
+        markdown_output_path=markdown_path,
+        include_diagnostics=True,
+    )
+
+    written_payload = json.loads(json_path.read_text(encoding="utf-8"))
+    markdown_text = markdown_path.read_text(encoding="utf-8")
+
+    assert result is payload
+    assert written_payload == payload
+    assert written_payload["diagnostics"] == payload["diagnostics"]
+    assert "## Diagnostics" in markdown_text
+    assert "no_successful_experiments" in markdown_text
+
+
+def test_default_pipeline_output_contains_no_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    payload = markdown_payload()
+    json_path = tmp_path / "comparison.json"
+    markdown_path = tmp_path / "comparison.md"
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "find_experiment_dirs",
+        lambda root: [],
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "analyze_experiment_dirs",
+        lambda dirs: {
+            "successful_experiments": [],
+            "failed_experiments": [],
+        },
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "build_comparison_payload",
+        lambda batch_result, **kwargs: payload,
+    )
+
+    run_comparison_pipeline(
+        tmp_path,
+        json_path,
+        markdown_output_path=markdown_path,
+    )
+
+    written_payload = json.loads(json_path.read_text(encoding="utf-8"))
+    markdown_text = markdown_path.read_text(encoding="utf-8")
+
+    assert "diagnostics" not in written_payload
+    assert "## Diagnostics" not in markdown_text
+
+
+def test_main_default_still_omits_diagnostics_keyword(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    received: dict[str, object] = {}
+
+    def strict_pipeline(
+        *,
+        experiment_root: Path,
+        output_path: Path,
+        sort_by: str,
+        descending: bool,
+        markdown_output_path: Path,
+    ) -> dict:
+        received.update(
+            experiment_root=experiment_root,
+            output_path=output_path,
+            sort_by=sort_by,
+            descending=descending,
+            markdown_output_path=markdown_output_path,
+        )
+        return _empty_cli_payload(sort_by, descending)
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        strict_pipeline,
+    )
+
+    compare_experiments.main([])
+
+    assert "include_diagnostics" not in received
+
+
+def test_main_enabled_passes_diagnostics_and_prints_status(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    received: dict[str, object] = {}
+
+    def fake_pipeline(**kwargs: object) -> dict:
+        received.update(kwargs)
+        payload = _empty_cli_payload(
+            str(kwargs["sort_by"]),
+            bool(kwargs["descending"]),
+        )
+        payload["experiment_counts"] = {
+            "total": 1,
+            "successful": 1,
+            "failed": 0,
+        }
+        return payload
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fake_pipeline,
+    )
+
+    compare_experiments.main(["--include-diagnostics"])
+
+    assert received["include_diagnostics"] is True
+    assert "规则诊断：已启用" in capsys.readouterr().out
+
+
+def test_main_enabled_empty_result_prints_diagnostics_status(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        lambda **kwargs: _empty_cli_payload(
+            str(kwargs["sort_by"]),
+            bool(kwargs["descending"]),
+        ),
+    )
+
+    compare_experiments.main(["--include-diagnostics"])
+
+    output = capsys.readouterr().out
+    assert "没有找到有效实验目录" in output
+    assert "规则诊断：已启用" in output
+
+
+def test_main_dynamic_enabled_passes_specs_and_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    specs = configurable_metric_specs()
+    received: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "read_metric_specs_config",
+        lambda path: specs,
+    )
+
+    def fake_pipeline(**kwargs: object) -> dict:
+        received.update(kwargs)
+        return _empty_cli_payload(
+            str(kwargs["sort_by"]),
+            bool(kwargs["descending"]),
+        )
+
+    monkeypatch.setattr(
+        compare_experiments,
+        "run_comparison_pipeline",
+        fake_pipeline,
+    )
+
+    compare_experiments.main(
+        [
+            "--metrics-config",
+            "configs/metrics.yaml",
+            "--sort-by",
+            "accuracy",
+            "--include-diagnostics",
+        ]
+    )
+
+    assert received["metric_specs"] is specs
+    assert received["include_diagnostics"] is True
+
+
+def test_comparison_diagnostics_cli_end_to_end_writes_json_and_markdown(
+    tmp_path: Path,
+):
+    experiment_root = tmp_path / "experiments"
+    experiment_a = experiment_root / "experiment_a"
+    experiment_b = experiment_root / "experiment_b"
+
+    for experiment_dir, r2_value, racc_value in [
+        (experiment_a, 0.70, 0.91),
+        (experiment_b, 0.80, 0.92),
+    ]:
+        experiment_dir.mkdir(parents=True)
+        (experiment_dir / "hparams.yaml").write_text(
+            "batch_size: 8\n",
+            encoding="utf-8",
+        )
+        (experiment_dir / "history.json").write_text(
+            json.dumps(
+                {
+                    "valid": {
+                        "app": {
+                            "r2": [[0, r2_value]],
+                            "racc": [[0, racc_value]],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    json_output = tmp_path / "reports" / "comparison.json"
+    markdown_output = tmp_path / "reports" / "comparison.md"
+
+    compare_experiments.main(
+        [
+            "--experiment-root",
+            str(experiment_root),
+            "--output-path",
+            str(json_output),
+            "--markdown-output-path",
+            str(markdown_output),
+            "--include-diagnostics",
+        ]
+    )
+
+    payload = json.loads(json_output.read_text(encoding="utf-8"))
+    markdown_text = markdown_output.read_text(encoding="utf-8")
+
+    assert "diagnostics" in payload
+    assert payload["diagnostics"]["facts"]["successful_experiments"] == 2
+    assert "## Diagnostics" in markdown_text
+
+
+
+def test_comparison_markdown_appends_recommendations_after_diagnostics():
+    payload = build_comparison_payload(
+        {
+            "successful_experiments": [
+                make_successful_experiment("only", 0.7, 0.93)
+            ],
+            "failed_experiments": [],
+        },
+        include_diagnostics=True,
+    )
+
+    markdown = build_comparison_markdown(payload)
+
+    assert markdown.index("## Diagnostics") < markdown.index(
+        "## Recommendations"
+    )
+    assert "add_comparison_experiments" in markdown
+    assert "single_successful_experiment" in markdown
+
+
+def test_comparison_markdown_handles_empty_recommendation_list():
+    payload = comparison_diagnostics_payload()
+    payload["diagnostics"]["recommendations"] = []
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "## Recommendations" in markdown
+    assert "No recommendations were generated." in markdown
+
+
+def test_comparison_payload_recommendations_are_json_friendly():
+    payload = build_comparison_payload(
+        {"successful_experiments": [], "failed_experiments": []},
+        include_diagnostics=True,
+    )
+
+    recommendation = payload["diagnostics"]["recommendations"][0]
+    assert list(recommendation) == [
+        "code",
+        "message",
+        "diagnostic_codes",
+    ]
+    assert type(recommendation["diagnostic_codes"]) is list
+
+
+def test_comparison_cli_output_includes_recommendations(
+    tmp_path: Path,
+):
+    experiment_root = tmp_path / "experiments"
+    experiment = experiment_root / "only"
+    experiment.mkdir(parents=True)
+    (experiment / "hparams.yaml").write_text(
+        "batch_size: 8\n",
+        encoding="utf-8",
+    )
+    (experiment / "history.json").write_text(
+        json.dumps(
+            {
+                "valid": {
+                    "app": {
+                        "r2": [[0, 0.7]],
+                        "racc": [[0, 0.9]],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    json_output = tmp_path / "comparison.json"
+    markdown_output = tmp_path / "comparison.md"
+
+    compare_experiments.main(
+        [
+            "--experiment-root",
+            str(experiment_root),
+            "--output-path",
+            str(json_output),
+            "--markdown-output-path",
+            str(markdown_output),
+            "--include-diagnostics",
+        ]
+    )
+
+    payload = json.loads(json_output.read_text(encoding="utf-8"))
+    markdown = markdown_output.read_text(encoding="utf-8")
+    assert payload["diagnostics"]["recommendations"]
+    assert "## Recommendations" in markdown
