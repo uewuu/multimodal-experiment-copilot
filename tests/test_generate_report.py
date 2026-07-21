@@ -82,6 +82,18 @@ def make_summary(*, include_diagnostics: bool = False) -> dict:
                             },
                         },
                     ],
+                    "recommendations": [
+                        {
+                            "code": "consider_extended_training",
+                            "message": (
+                                "Consider extending training or patience."
+                            ),
+                            "diagnostic_codes": [
+                                "best_at_last_record",
+                                "recent_improvement",
+                            ],
+                        }
+                    ],
                 },
                 "racc": {
                     "facts": {"recent_trend": "mixed"},
@@ -96,6 +108,16 @@ def make_summary(*, include_diagnostics: bool = False) -> dict:
                                 "label": "left|right",
                                 "note": "line1\nline2",
                             },
+                        }
+                    ],
+                    "recommendations": [
+                        {
+                            "code": "avoid_trend_conclusion",
+                            "message": (
+                                "Avoid strong trend conclusions until "
+                                "additional records clarify the mixed direction."
+                            ),
+                            "diagnostic_codes": ["recent_mixed"],
                         }
                     ],
                 },
@@ -222,8 +244,16 @@ def test_diagnostics_markdown_handles_no_generated_diagnostics() -> None:
     summary = make_summary()
     summary["diagnostics"] = {
         "metrics": {
-            "r2": {"facts": {}, "diagnostics": []},
-            "racc": {"facts": {}, "diagnostics": []},
+            "r2": {
+                "facts": {},
+                "diagnostics": [],
+                "recommendations": [],
+            },
+            "racc": {
+                "facts": {},
+                "diagnostics": [],
+                "recommendations": [],
+            },
         }
     }
 
@@ -481,3 +511,74 @@ def test_main_missing_files_keeps_existing_error_message(
 ) -> None:
     with pytest.raises(SystemExit, match="^报告生成失败："):
         main(["--experiment-dir", str(tmp_path)])
+
+
+
+def test_default_markdown_omits_recommendations_section() -> None:
+    markdown = build_markdown_report(make_summary())
+
+    assert "## 6. 规则建议" not in markdown
+
+
+def test_recommendations_markdown_follows_diagnostics_section() -> None:
+    markdown = build_markdown_report(
+        make_summary(include_diagnostics=True)
+    )
+
+    assert markdown.index("## 5. 规则诊断") < markdown.index(
+        "## 6. 规则建议"
+    )
+
+
+def test_recommendations_markdown_contains_stable_table() -> None:
+    markdown = build_markdown_report(
+        make_summary(include_diagnostics=True)
+    )
+
+    assert "| 指标 | 建议代码 | 建议 | 触发诊断 |" in markdown
+    assert "|---|---|---|---|" in markdown
+    assert "| R² | `consider_extended_training` |" in markdown
+    assert "| RACC | `avoid_trend_conclusion` |" in markdown
+
+
+def test_recommendations_markdown_serializes_trigger_codes_in_order() -> None:
+    markdown = build_markdown_report(
+        make_summary(include_diagnostics=True)
+    )
+
+    assert (
+        "`best_at_last_record、recent_improvement`"
+        in markdown
+    )
+
+
+def test_recommendations_markdown_handles_empty_lists() -> None:
+    summary = make_summary(include_diagnostics=True)
+    for metric in summary["diagnostics"]["metrics"].values():
+        metric["recommendations"] = []
+
+    markdown = build_markdown_report(summary)
+
+    assert "| — | — | 未生成规则建议 | — |" in markdown
+
+
+def test_generated_report_writes_recommendations_to_json_and_markdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_summary = make_summary(include_diagnostics=True)
+    monkeypatch.setattr(
+        generate_report,
+        "build_experiment_summary",
+        lambda **kwargs: expected_summary,
+    )
+
+    json_path, markdown_path = generate_experiment_report(
+        output_dir=tmp_path,
+        include_diagnostics=True,
+    )
+
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert payload["diagnostics"]["metrics"]["r2"]["recommendations"]
+    assert "## 6. 规则建议" in markdown

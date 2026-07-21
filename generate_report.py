@@ -86,6 +86,63 @@ def _append_diagnostics_section(
         )
 
 
+def _append_recommendations_section(
+    report_lines: list[str],
+    summary: dict,
+) -> None:
+    """在诊断载荷包含建议时追加 Markdown 建议章节。"""
+    diagnostic_payload = summary.get("diagnostics")
+    if not isinstance(diagnostic_payload, dict):
+        return
+
+    metric_payloads = diagnostic_payload.get("metrics")
+    if not isinstance(metric_payloads, dict):
+        return
+    if not any(
+        "recommendations" in metric_payload
+        for metric_payload in metric_payloads.values()
+        if isinstance(metric_payload, dict)
+    ):
+        return
+
+    report_lines.extend(
+        [
+            "",
+            "## 6. 规则建议",
+            "",
+            "| 指标 | 建议代码 | 建议 | 触发诊断 |",
+            "|---|---|---|---|",
+        ]
+    )
+
+    recommendation_count = 0
+    for metric_name, metric_payload in metric_payloads.items():
+        metric_display_name = _DIAGNOSTIC_METRIC_DISPLAY_NAMES.get(
+            metric_name,
+            metric_name,
+        )
+        for recommendation in metric_payload.get(
+            "recommendations",
+            [],
+        ):
+            trigger_text = "、".join(
+                recommendation["diagnostic_codes"]
+            )
+            report_lines.append(
+                "| "
+                f"{_escape_markdown_cell(metric_display_name)} | "
+                f"`{_escape_markdown_cell(recommendation['code'])}` | "
+                f"{_escape_markdown_cell(recommendation['message'])} | "
+                f"`{_escape_markdown_cell(trigger_text)}` |"
+            )
+            recommendation_count += 1
+
+    if recommendation_count == 0:
+        report_lines.append(
+            "| — | — | 未生成规则建议 | — |"
+        )
+
+
 def build_markdown_report(summary: dict) -> str:
     """根据结构化摘要生成 Markdown 实验报告。"""
     configuration = summary["configuration"]
@@ -193,6 +250,7 @@ def build_markdown_report(summary: dict) -> str:
         )
 
     _append_diagnostics_section(report_lines, summary)
+    _append_recommendations_section(report_lines, summary)
 
     return "\n".join(report_lines) + "\n"
 
@@ -275,7 +333,7 @@ def parse_arguments(
     parser.add_argument(
         "--include-diagnostics",
         action="store_true",
-        help="在 JSON 摘要和 Markdown 报告中加入规则诊断。",
+        help="在 JSON 摘要和 Markdown 报告中加入规则诊断与建议。",
     )
 
     return parser.parse_args(argv)

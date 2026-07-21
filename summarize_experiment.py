@@ -5,7 +5,9 @@ from pprint import pprint
 from diagnostics import (
     build_metric_diagnostics,
     build_metric_facts,
+    build_recommendations,
     diagnostic_to_dict,
+    recommendation_to_dict,
 )
 from metrics import (
     MetricDirection,
@@ -64,12 +66,17 @@ def _build_metric_diagnostic_payload(
         recent_window=recent_window,
     )
     diagnostics = build_metric_diagnostics(facts)
+    recommendations = build_recommendations(diagnostics)
 
     return {
         "facts": facts,
         "diagnostics": [
             diagnostic_to_dict(item)
             for item in diagnostics
+        ],
+        "recommendations": [
+            recommendation_to_dict(item)
+            for item in recommendations
         ],
     }
 

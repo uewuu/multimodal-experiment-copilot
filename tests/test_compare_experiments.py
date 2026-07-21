@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 import compare_experiments
+from diagnostics import Diagnostic, Recommendation
 from metrics import MetricSpec
 from compare_experiments import (
     DEFAULT_COMPARISON_MARKDOWN_OUTPUT_PATH,
@@ -3469,7 +3470,17 @@ def test_disabled_diagnostics_do_not_call_diagnostic_helpers(
     )
     monkeypatch.setattr(
         compare_experiments,
+        "build_recommendations",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
         "diagnostic_to_dict",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "recommendation_to_dict",
         fail_if_called,
     )
 
@@ -3503,6 +3514,7 @@ def test_enabled_default_payload_appends_diagnostics_field():
     assert list(payload["diagnostics"]) == [
         "facts",
         "diagnostics",
+        "recommendations",
     ]
 
 
@@ -3546,19 +3558,27 @@ def test_enabled_payload_uses_plain_json_friendly_diagnostic_data():
         type(diagnostic) is dict
         for diagnostic in diagnostic_payload["diagnostics"]
     )
+    assert type(diagnostic_payload["recommendations"]) is list
+    assert all(
+        type(recommendation) is dict
+        for recommendation in diagnostic_payload["recommendations"]
+    )
     assert json.loads(
         json.dumps(payload, allow_nan=False)
     ) == payload
 
 
-def test_enabled_payload_does_not_add_recommendations():
+def test_enabled_payload_adds_recommendations_under_diagnostics():
     payload = build_comparison_payload(
         {"successful_experiments": [], "failed_experiments": []},
         include_diagnostics=True,
     )
 
     assert "recommendations" not in payload
-    assert "recommendations" not in payload["diagnostics"]
+    assert [
+        item["code"]
+        for item in payload["diagnostics"]["recommendations"]
+    ] == ["resolve_analysis_failures"]
 
 
 def test_empty_batch_includes_no_successful_experiments_diagnostic():
@@ -3688,24 +3708,46 @@ def test_diagnostic_helpers_receive_final_payload_once(
     }
     calls: list[tuple[str, object]] = []
     expected_facts = {"fact": 1}
-    diagnostic_sentinel = object()
+    diagnostic = Diagnostic(
+        "synthetic_diagnostic",
+        "info",
+        "Synthetic diagnostic.",
+        {},
+    )
+    recommendation = Recommendation(
+        "synthetic_recommendation",
+        "Synthetic recommendation.",
+        ("synthetic_diagnostic",),
+    )
 
     def fake_build_facts(payload: dict) -> dict:
         calls.append(("facts", payload))
         assert "diagnostics" not in payload
         return expected_facts
 
-    def fake_build_diagnostics(facts: dict) -> tuple[object, ...]:
+    def fake_build_diagnostics(facts: dict):
         calls.append(("diagnostics", facts))
-        return (diagnostic_sentinel,)
+        return (diagnostic,)
 
-    def fake_serialize(diagnostic: object) -> dict:
-        calls.append(("serialize", diagnostic))
+    def fake_build_recommendations(diagnostics):
+        calls.append(("recommendations", diagnostics))
+        return (recommendation,)
+
+    def fake_serialize_diagnostic(item):
+        calls.append(("serialize_diagnostic", item))
         return {
-            "code": "synthetic_diagnostic",
-            "severity": "info",
-            "message": "Synthetic diagnostic.",
+            "code": item.code,
+            "severity": item.severity,
+            "message": item.message,
             "evidence": {},
+        }
+
+    def fake_serialize_recommendation(item):
+        calls.append(("serialize_recommendation", item))
+        return {
+            "code": item.code,
+            "message": item.message,
+            "diagnostic_codes": list(item.diagnostic_codes),
         }
 
     monkeypatch.setattr(
@@ -3720,8 +3762,18 @@ def test_diagnostic_helpers_receive_final_payload_once(
     )
     monkeypatch.setattr(
         compare_experiments,
+        "build_recommendations",
+        fake_build_recommendations,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
         "diagnostic_to_dict",
-        fake_serialize,
+        fake_serialize_diagnostic,
+    )
+    monkeypatch.setattr(
+        compare_experiments,
+        "recommendation_to_dict",
+        fake_serialize_recommendation,
     )
 
     payload = build_comparison_payload(
@@ -3729,21 +3781,17 @@ def test_diagnostic_helpers_receive_final_payload_once(
         include_diagnostics=True,
     )
 
-    assert calls[0][0] == "facts"
-    assert calls[1] == ("diagnostics", expected_facts)
-    assert calls[2] == ("serialize", diagnostic_sentinel)
-    assert len(calls) == 3
-    assert payload["diagnostics"] == {
-        "facts": expected_facts,
-        "diagnostics": [
-            {
-                "code": "synthetic_diagnostic",
-                "severity": "info",
-                "message": "Synthetic diagnostic.",
-                "evidence": {},
-            }
-        ],
-    }
+    assert calls == [
+        ("facts", calls[0][1]),
+        ("diagnostics", expected_facts),
+        ("recommendations", (diagnostic,)),
+        ("serialize_diagnostic", diagnostic),
+        ("serialize_recommendation", recommendation),
+    ]
+    assert payload["diagnostics"]["facts"] is expected_facts
+    assert payload["diagnostics"]["recommendations"][0]["code"] == (
+        "synthetic_recommendation"
+    )
 
 
 def test_diagnostic_facts_error_propagates_without_serialization(
@@ -3822,7 +3870,12 @@ def test_diagnostic_serialization_error_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ):
     expected_error = TypeError("serialization failed")
-    diagnostic_sentinel = object()
+    diagnostic_sentinel = Diagnostic(
+        "synthetic_diagnostic",
+        "info",
+        "Synthetic diagnostic.",
+        {},
+    )
     monkeypatch.setattr(
         compare_experiments,
         "build_comparison_facts",
@@ -4614,3 +4667,93 @@ def test_comparison_diagnostics_cli_end_to_end_writes_json_and_markdown(
     assert "diagnostics" in payload
     assert payload["diagnostics"]["facts"]["successful_experiments"] == 2
     assert "## Diagnostics" in markdown_text
+
+
+
+def test_comparison_markdown_appends_recommendations_after_diagnostics():
+    payload = build_comparison_payload(
+        {
+            "successful_experiments": [
+                make_successful_experiment("only", 0.7, 0.93)
+            ],
+            "failed_experiments": [],
+        },
+        include_diagnostics=True,
+    )
+
+    markdown = build_comparison_markdown(payload)
+
+    assert markdown.index("## Diagnostics") < markdown.index(
+        "## Recommendations"
+    )
+    assert "add_comparison_experiments" in markdown
+    assert "single_successful_experiment" in markdown
+
+
+def test_comparison_markdown_handles_empty_recommendation_list():
+    payload = comparison_diagnostics_payload()
+    payload["diagnostics"]["recommendations"] = []
+
+    markdown = build_comparison_markdown(payload)
+
+    assert "## Recommendations" in markdown
+    assert "No recommendations were generated." in markdown
+
+
+def test_comparison_payload_recommendations_are_json_friendly():
+    payload = build_comparison_payload(
+        {"successful_experiments": [], "failed_experiments": []},
+        include_diagnostics=True,
+    )
+
+    recommendation = payload["diagnostics"]["recommendations"][0]
+    assert list(recommendation) == [
+        "code",
+        "message",
+        "diagnostic_codes",
+    ]
+    assert type(recommendation["diagnostic_codes"]) is list
+
+
+def test_comparison_cli_output_includes_recommendations(
+    tmp_path: Path,
+):
+    experiment_root = tmp_path / "experiments"
+    experiment = experiment_root / "only"
+    experiment.mkdir(parents=True)
+    (experiment / "hparams.yaml").write_text(
+        "batch_size: 8\n",
+        encoding="utf-8",
+    )
+    (experiment / "history.json").write_text(
+        json.dumps(
+            {
+                "valid": {
+                    "app": {
+                        "r2": [[0, 0.7]],
+                        "racc": [[0, 0.9]],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    json_output = tmp_path / "comparison.json"
+    markdown_output = tmp_path / "comparison.md"
+
+    compare_experiments.main(
+        [
+            "--experiment-root",
+            str(experiment_root),
+            "--output-path",
+            str(json_output),
+            "--markdown-output-path",
+            str(markdown_output),
+            "--include-diagnostics",
+        ]
+    )
+
+    payload = json.loads(json_output.read_text(encoding="utf-8"))
+    markdown = markdown_output.read_text(encoding="utf-8")
+    assert payload["diagnostics"]["recommendations"]
+    assert "## Recommendations" in markdown

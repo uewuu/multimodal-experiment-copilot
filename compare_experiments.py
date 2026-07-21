@@ -6,7 +6,9 @@ from pathlib import Path
 from diagnostics import (
     build_comparison_diagnostics,
     build_comparison_facts,
+    build_recommendations,
     diagnostic_to_dict,
+    recommendation_to_dict,
 )
 from metrics import MetricSpec
 from read_config import CONFIG_PATH
@@ -346,11 +348,16 @@ def build_comparison_payload(
 
     facts = build_comparison_facts(payload)
     diagnostics = build_comparison_diagnostics(facts)
+    recommendations = build_recommendations(diagnostics)
     payload["diagnostics"] = {
         "facts": facts,
         "diagnostics": [
             diagnostic_to_dict(diagnostic)
             for diagnostic in diagnostics
+        ],
+        "recommendations": [
+            recommendation_to_dict(recommendation)
+            for recommendation in recommendations
         ],
     }
     return payload
@@ -400,6 +407,46 @@ def _append_comparison_diagnostics_section(
             f"`{_escape_markdown_cell(diagnostic['code'])}` | "
             f"{_escape_markdown_cell(diagnostic['message'])} | "
             f"`{_escape_markdown_cell(evidence_text)}` |"
+        )
+
+
+def _append_comparison_recommendations_section(
+    report_lines: list[str],
+    payload: dict,
+) -> None:
+    """Append deterministic recommendations when available."""
+    diagnostic_payload = payload.get("diagnostics")
+    if not isinstance(diagnostic_payload, dict):
+        return
+    if "recommendations" not in diagnostic_payload:
+        return
+
+    recommendation_items = diagnostic_payload["recommendations"]
+    report_lines.extend(
+        [
+            "",
+            "## Recommendations",
+            "",
+            "| Code | Recommendation | Triggered Diagnostics |",
+            "| --- | --- | --- |",
+        ]
+    )
+
+    if not recommendation_items:
+        report_lines.append(
+            "| — | No recommendations were generated. | — |"
+        )
+        return
+
+    for recommendation in recommendation_items:
+        trigger_text = ", ".join(
+            recommendation["diagnostic_codes"]
+        )
+        report_lines.append(
+            "| "
+            f"`{_escape_markdown_cell(recommendation['code'])}` | "
+            f"{_escape_markdown_cell(recommendation['message'])} | "
+            f"`{_escape_markdown_cell(trigger_text)}` |"
         )
 
 
@@ -508,6 +555,7 @@ def build_comparison_markdown(payload: dict) -> str:
             )
 
     _append_comparison_diagnostics_section(report_lines, payload)
+    _append_comparison_recommendations_section(report_lines, payload)
     return "\n".join(report_lines) + "\n"
 
 
@@ -678,7 +726,7 @@ def parse_args(
     parser.add_argument(
         "--include-diagnostics",
         action="store_true",
-        help="在 JSON 和 Markdown 对比报告中加入规则诊断",
+        help="在 JSON 和 Markdown 对比报告中加入规则诊断与建议",
     )
 
     return parser.parse_args(argv)

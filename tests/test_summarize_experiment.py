@@ -703,7 +703,9 @@ def test_disabled_diagnostics_does_not_call_diagnostic_helpers(
 
     monkeypatch.setattr(summarize_experiment, "build_metric_facts", fail)
     monkeypatch.setattr(summarize_experiment, "build_metric_diagnostics", fail)
+    monkeypatch.setattr(summarize_experiment, "build_recommendations", fail)
     monkeypatch.setattr(summarize_experiment, "diagnostic_to_dict", fail)
+    monkeypatch.setattr(summarize_experiment, "recommendation_to_dict", fail)
 
     summary = _build_summary(include_diagnostics=False)
 
@@ -788,8 +790,16 @@ def test_default_diagnostics_metric_entries_have_stable_schema(
 
     metrics = _build_summary(include_diagnostics=True)["diagnostics"]["metrics"]
 
-    assert list(metrics["r2"]) == ["facts", "diagnostics"]
-    assert list(metrics["racc"]) == ["facts", "diagnostics"]
+    assert list(metrics["r2"]) == [
+        "facts",
+        "diagnostics",
+        "recommendations",
+    ]
+    assert list(metrics["racc"]) == [
+        "facts",
+        "diagnostics",
+        "recommendations",
+    ]
     assert list(metrics["r2"]["facts"]) == DIAGNOSTIC_FACT_KEYS
     assert list(metrics["racc"]["facts"]) == DIAGNOSTIC_FACT_KEYS
 
@@ -805,6 +815,7 @@ def test_default_diagnostics_are_serialized_plain_objects(
         assert type(metric) is dict
         assert type(metric["facts"]) is dict
         assert type(metric["diagnostics"]) is list
+        assert type(metric["recommendations"]) is list
         for diagnostic in metric["diagnostics"]:
             assert type(diagnostic) is dict
             assert list(diagnostic) == [
@@ -814,6 +825,14 @@ def test_default_diagnostics_are_serialized_plain_objects(
                 "evidence",
             ]
             assert type(diagnostic["evidence"]) is dict
+        for recommendation in metric["recommendations"]:
+            assert type(recommendation) is dict
+            assert list(recommendation) == [
+                "code",
+                "message",
+                "diagnostic_codes",
+            ]
+            assert type(recommendation["diagnostic_codes"]) is list
 
 
 def test_default_diagnostics_summary_is_json_serializable(
@@ -844,7 +863,7 @@ def test_diagnostics_does_not_change_default_validation_metrics(
     } & set(with_diagnostics["validation_metrics"]["r2"])
 
 
-def test_enabled_summary_does_not_contain_recommendations_or_metadata(
+def test_enabled_summary_contains_recommendations_without_control_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_inputs(monkeypatch, _default_history())
@@ -852,7 +871,7 @@ def test_enabled_summary_does_not_contain_recommendations_or_metadata(
     summary = _build_summary(include_diagnostics=True)
     serialized = json.dumps(summary)
 
-    assert "recommendations" not in serialized
+    assert "recommendations" in serialized
     assert "include_diagnostics" not in summary
     assert "diagnostic_recent_window" not in summary
 
@@ -944,8 +963,8 @@ def test_diagnostic_to_dict_called_for_every_generated_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_inputs(monkeypatch, _default_history())
-    first = object()
-    second = object()
+    first = Diagnostic("synthetic_one", "info", "First.", {})
+    second = Diagnostic("synthetic_two", "warning", "Second.", {})
     received: list[object] = []
 
     monkeypatch.setattr(
@@ -1484,3 +1503,72 @@ def test_summary_keeps_exact_facts_object_returned_by_builder(
     assert r2_facts in facts_by_records.values()
     assert racc_facts in facts_by_records.values()
     assert r2_facts is not racc_facts
+
+
+
+def test_metric_recommendations_are_built_from_generated_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+    diagnostics_seen: list[tuple[Diagnostic, ...]] = []
+
+    def fake_build_recommendations(diagnostics):
+        diagnostics_seen.append(diagnostics)
+        return ()
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "build_recommendations",
+        fake_build_recommendations,
+    )
+
+    summary = _build_summary(include_diagnostics=True)
+
+    assert len(diagnostics_seen) == 2
+    assert all(isinstance(items, tuple) for items in diagnostics_seen)
+    assert summary["diagnostics"]["metrics"]["r2"]["recommendations"] == []
+    assert summary["diagnostics"]["metrics"]["racc"]["recommendations"] == []
+
+
+def test_default_summary_serializes_deterministic_recommendations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    metrics = _build_summary(include_diagnostics=True)["diagnostics"]["metrics"]
+
+    assert [
+        item["code"]
+        for item in metrics["r2"]["recommendations"]
+    ] == [
+        "restore_best_checkpoint",
+        "avoid_trend_conclusion",
+    ]
+    assert [
+        item["code"]
+        for item in metrics["racc"]["recommendations"]
+    ] == [
+        "restore_best_checkpoint",
+        "avoid_trend_conclusion",
+    ]
+
+
+def test_recommendation_serialization_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_inputs(monkeypatch, _default_history())
+
+    def raise_serialization_error(item):
+        raise TypeError("recommendation serialization failed")
+
+    monkeypatch.setattr(
+        summarize_experiment,
+        "recommendation_to_dict",
+        raise_serialization_error,
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="^recommendation serialization failed$",
+    ):
+        _build_summary(include_diagnostics=True)
