@@ -415,3 +415,286 @@ def build_metric_diagnostics(
         )
 
     return tuple(diagnostics)
+
+def _comparison_count(
+    counts: Mapping[str, object],
+    key: str,
+) -> int:
+    value = counts[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(
+            f"experiment_counts['{key}'] must be an integer"
+        )
+    if value < 0:
+        raise ValueError(
+            f"experiment_counts['{key}'] must be non-negative"
+        )
+    return value
+
+
+def _extract_comparison_metric_value(
+    record: Mapping[str, object],
+    sort_by: str,
+    dynamic_mode: bool,
+    record_index: int,
+) -> int | float:
+    if dynamic_mode:
+        metrics = record["metrics"]
+        if not isinstance(metrics, Mapping):
+            raise TypeError(
+                f"comparison_records[{record_index}]['metrics'] "
+                "must be a mapping"
+            )
+        metric_summary = metrics[sort_by]
+        if not isinstance(metric_summary, Mapping):
+            raise TypeError(
+                f"comparison_records[{record_index}]['metrics']"
+                f"['{sort_by}'] must be a mapping"
+            )
+        value = metric_summary["best_value"]
+    else:
+        value = record[sort_by]
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(
+            f"comparison_records[{record_index}] ranked metric "
+            "value must be a number"
+        )
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError(
+            f"comparison_records[{record_index}] ranked metric "
+            "value must be finite"
+        )
+    return value
+
+
+def build_comparison_facts(
+    comparison_payload: Mapping[str, object],
+) -> dict[str, object]:
+    """根据已排序的多实验比较结果计算确定性事实。"""
+    if not isinstance(comparison_payload, Mapping):
+        raise TypeError("comparison_payload must be a mapping")
+
+    counts = comparison_payload["experiment_counts"]
+    if not isinstance(counts, Mapping):
+        raise TypeError(
+            "comparison_payload['experiment_counts'] must be a mapping"
+        )
+
+    total_experiments = _comparison_count(counts, "total")
+    successful_experiments = _comparison_count(counts, "successful")
+    failed_experiments = _comparison_count(counts, "failed")
+
+    if total_experiments != successful_experiments + failed_experiments:
+        raise ValueError(
+            "experiment counts must satisfy "
+            "total == successful + failed"
+        )
+
+    sort_by = comparison_payload["sort_by"]
+    if not isinstance(sort_by, str):
+        raise TypeError(
+            "comparison_payload['sort_by'] must be a string"
+        )
+    if not sort_by:
+        raise ValueError(
+            "comparison_payload['sort_by'] must not be empty"
+        )
+
+    descending = comparison_payload["descending"]
+    if not isinstance(descending, bool):
+        raise TypeError(
+            "comparison_payload['descending'] must be a boolean"
+        )
+
+    comparison_records = comparison_payload["comparison_records"]
+    if (
+        not isinstance(comparison_records, Sequence)
+        or isinstance(comparison_records, (str, bytes, bytearray))
+    ):
+        raise TypeError(
+            "comparison_payload['comparison_records'] "
+            "must be a sequence"
+        )
+
+    if len(comparison_records) != successful_experiments:
+        raise ValueError(
+            "comparison_records length must equal "
+            "successful experiment count"
+        )
+
+    dynamic_mode = "metric_specs" in comparison_payload
+    ranked_records: list[tuple[str, int | float]] = []
+
+    for index, record in enumerate(comparison_records):
+        if not isinstance(record, Mapping):
+            raise TypeError(
+                f"comparison_records[{index}] must be a mapping"
+            )
+
+        experiment_name = record["experiment_name"]
+        if not isinstance(experiment_name, str):
+            raise TypeError(
+                f"comparison_records[{index}]['experiment_name'] "
+                "must be a string"
+            )
+        if not experiment_name:
+            raise ValueError(
+                f"comparison_records[{index}]['experiment_name'] "
+                "must not be empty"
+            )
+
+        ranked_records.append(
+            (
+                experiment_name,
+                _extract_comparison_metric_value(
+                    record,
+                    sort_by,
+                    dynamic_mode,
+                    index,
+                ),
+            )
+        )
+
+    ranked_experiment_count = len(ranked_records)
+    success_rate = (
+        successful_experiments / total_experiments
+        if total_experiments > 0
+        else None
+    )
+
+    if ranked_records:
+        top_experiment_name, top_value = ranked_records[0]
+        worst_experiment_name, worst_value = ranked_records[-1]
+        tied_best_experiments = [
+            experiment_name
+            for experiment_name, value in ranked_records
+            if value == top_value
+        ]
+    else:
+        top_experiment_name = None
+        top_value = None
+        worst_experiment_name = None
+        worst_value = None
+        tied_best_experiments = []
+
+    if ranked_experiment_count > 1:
+        second_experiment_name, second_value = ranked_records[1]
+        if descending:
+            top_vs_second_gap = top_value - second_value
+            best_vs_worst_gap = top_value - worst_value
+        else:
+            top_vs_second_gap = second_value - top_value
+            best_vs_worst_gap = worst_value - top_value
+    elif ranked_experiment_count == 1:
+        second_experiment_name = None
+        second_value = None
+        top_vs_second_gap = None
+        best_vs_worst_gap = top_value - top_value
+    else:
+        second_experiment_name = None
+        second_value = None
+        top_vs_second_gap = None
+        best_vs_worst_gap = None
+
+    return {
+        "total_experiments": total_experiments,
+        "successful_experiments": successful_experiments,
+        "failed_experiments": failed_experiments,
+        "success_rate": success_rate,
+        "sort_by": sort_by,
+        "descending": descending,
+        "ranked_experiment_count": ranked_experiment_count,
+        "top_experiment_name": top_experiment_name,
+        "top_value": top_value,
+        "second_experiment_name": second_experiment_name,
+        "second_value": second_value,
+        "worst_experiment_name": worst_experiment_name,
+        "worst_value": worst_value,
+        "top_vs_second_gap": top_vs_second_gap,
+        "best_vs_worst_gap": best_vs_worst_gap,
+        "tied_best_experiments": tied_best_experiments,
+        "has_failures": failed_experiments > 0,
+        "has_successful_experiments": successful_experiments > 0,
+        "single_successful_experiment": successful_experiments == 1,
+    }
+
+
+def build_comparison_diagnostics(
+    facts: Mapping[str, object],
+) -> tuple[Diagnostic, ...]:
+    """根据多实验比较事实生成固定规则诊断。"""
+    if not isinstance(facts, Mapping):
+        raise TypeError("facts must be a mapping")
+
+    diagnostics: list[Diagnostic] = []
+
+    if facts["has_successful_experiments"] is False:
+        diagnostics.append(
+            Diagnostic(
+                code="no_successful_experiments",
+                severity="warning",
+                message=(
+                    "No experiments were analyzed successfully."
+                ),
+                evidence={
+                    "total_experiments": facts["total_experiments"],
+                    "failed_experiments": facts["failed_experiments"],
+                },
+            )
+        )
+
+    if facts["has_failures"] is True:
+        diagnostics.append(
+            Diagnostic(
+                code="failed_experiments_present",
+                severity="warning",
+                message=(
+                    "One or more experiments failed during analysis."
+                ),
+                evidence={
+                    "failed_experiments": facts["failed_experiments"],
+                    "total_experiments": facts["total_experiments"],
+                },
+            )
+        )
+
+    if facts["single_successful_experiment"] is True:
+        diagnostics.append(
+            Diagnostic(
+                code="single_successful_experiment",
+                severity="info",
+                message=(
+                    "Only one experiment was analyzed successfully."
+                ),
+                evidence={
+                    "successful_experiments": facts[
+                        "successful_experiments"
+                    ],
+                    "top_experiment_name": facts[
+                        "top_experiment_name"
+                    ],
+                },
+            )
+        )
+
+    tied_best_experiments = facts["tied_best_experiments"]
+    if len(tied_best_experiments) > 1:
+        diagnostics.append(
+            Diagnostic(
+                code="tied_best_experiments",
+                severity="info",
+                message=(
+                    "Multiple experiments share the best ranked value."
+                ),
+                evidence={
+                    "sort_by": facts["sort_by"],
+                    "top_value": facts["top_value"],
+                    "experiment_names": deepcopy(
+                        tied_best_experiments
+                    ),
+                },
+            )
+        )
+
+    return tuple(diagnostics)

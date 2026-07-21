@@ -7,6 +7,8 @@ import pytest
 
 from diagnostics import (
     Diagnostic,
+    build_comparison_diagnostics,
+    build_comparison_facts,
     build_metric_diagnostics,
     build_metric_facts,
     diagnostic_to_dict,
@@ -907,3 +909,759 @@ def test_diagnostic_evidence_does_not_alias_nested_fact_lists():
     facts["non_monotonic_epoch_transitions"][0]["current_epoch"] = 99
 
     assert diagnostic.evidence["transitions"][0]["current_epoch"] == 1
+
+COMPARISON_FACT_KEYS = [
+    "total_experiments",
+    "successful_experiments",
+    "failed_experiments",
+    "success_rate",
+    "sort_by",
+    "descending",
+    "ranked_experiment_count",
+    "top_experiment_name",
+    "top_value",
+    "second_experiment_name",
+    "second_value",
+    "worst_experiment_name",
+    "worst_value",
+    "top_vs_second_gap",
+    "best_vs_worst_gap",
+    "tied_best_experiments",
+    "has_failures",
+    "has_successful_experiments",
+    "single_successful_experiment",
+]
+
+
+def _default_comparison_payload(
+    values: list[int | float],
+    *,
+    sort_by: str = "best_r2",
+    descending: bool = True,
+    failed: int = 0,
+) -> dict[str, object]:
+    records = []
+    for index, value in enumerate(values):
+        records.append(
+            {
+                "experiment_name": f"exp_{index + 1}",
+                "experiment_dir": f"/experiments/exp_{index + 1}",
+                "best_r2": value,
+                "best_r2_epoch": index,
+                "best_racc": value,
+                "best_racc_epoch": index,
+            }
+        )
+
+    return {
+        "sort_by": sort_by,
+        "descending": descending,
+        "experiment_counts": {
+            "total": len(values) + failed,
+            "successful": len(values),
+            "failed": failed,
+        },
+        "comparison_records": records,
+        "failed_experiments": [
+            {
+                "experiment_name": f"failed_{index + 1}",
+                "experiment_dir": f"/experiments/failed_{index + 1}",
+                "error_type": "ValueError",
+                "error_message": "Invalid experiment",
+            }
+            for index in range(failed)
+        ],
+    }
+
+
+def _dynamic_comparison_payload(
+    values: list[int | float],
+    *,
+    metric_name: str = "mae",
+    descending: bool = False,
+    failed: int = 0,
+) -> dict[str, object]:
+    records = []
+    for index, value in enumerate(values):
+        records.append(
+            {
+                "experiment_name": f"exp_{index + 1}",
+                "experiment_dir": f"/experiments/exp_{index + 1}",
+                "metrics": {
+                    metric_name: {
+                        "record_count": 3,
+                        "first_epoch": 0,
+                        "first_value": value,
+                        "last_epoch": 2,
+                        "last_value": value,
+                        "best_epoch": 1,
+                        "best_value": value,
+                    },
+                },
+            }
+        )
+
+    return {
+        "sort_by": metric_name,
+        "descending": descending,
+        "metric_specs": [
+            {
+                "name": metric_name,
+                "path": ["valid", "app", metric_name],
+                "direction": (
+                    "maximize" if descending else "minimize"
+                ),
+                "display_name": metric_name.upper(),
+                "precision": 4,
+            }
+        ],
+        "experiment_counts": {
+            "total": len(values) + failed,
+            "successful": len(values),
+            "failed": failed,
+        },
+        "comparison_records": records,
+        "failed_experiments": [],
+    }
+
+
+def _comparison_diagnostic_by_code(
+    facts: dict[str, object],
+    code: str,
+) -> Diagnostic:
+    return next(
+        diagnostic
+        for diagnostic in build_comparison_diagnostics(facts)
+        if diagnostic.code == code
+    )
+
+
+def test_build_comparison_facts_has_exact_field_order():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.8])
+    )
+
+    assert list(facts) == COMPARISON_FACT_KEYS
+
+
+def test_build_comparison_facts_handles_empty_batch():
+    facts = build_comparison_facts(
+        _default_comparison_payload([])
+    )
+
+    assert facts == {
+        "total_experiments": 0,
+        "successful_experiments": 0,
+        "failed_experiments": 0,
+        "success_rate": None,
+        "sort_by": "best_r2",
+        "descending": True,
+        "ranked_experiment_count": 0,
+        "top_experiment_name": None,
+        "top_value": None,
+        "second_experiment_name": None,
+        "second_value": None,
+        "worst_experiment_name": None,
+        "worst_value": None,
+        "top_vs_second_gap": None,
+        "best_vs_worst_gap": None,
+        "tied_best_experiments": [],
+        "has_failures": False,
+        "has_successful_experiments": False,
+        "single_successful_experiment": False,
+    }
+
+
+def test_build_comparison_facts_handles_all_failed_experiments():
+    facts = build_comparison_facts(
+        _default_comparison_payload([], failed=3)
+    )
+
+    assert facts["total_experiments"] == 3
+    assert facts["successful_experiments"] == 0
+    assert facts["failed_experiments"] == 3
+    assert facts["success_rate"] == 0.0
+    assert facts["has_failures"] is True
+    assert facts["has_successful_experiments"] is False
+
+
+def test_build_comparison_facts_handles_single_success():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.8])
+    )
+
+    assert facts["top_experiment_name"] == "exp_1"
+    assert facts["top_value"] == pytest.approx(0.8)
+    assert facts["second_experiment_name"] is None
+    assert facts["second_value"] is None
+    assert facts["worst_experiment_name"] == "exp_1"
+    assert facts["worst_value"] == pytest.approx(0.8)
+    assert facts["top_vs_second_gap"] is None
+    assert facts["best_vs_worst_gap"] == pytest.approx(0.0)
+    assert facts["tied_best_experiments"] == ["exp_1"]
+    assert facts["single_successful_experiment"] is True
+
+
+def test_build_comparison_facts_calculates_descending_gaps():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.7, 0.4])
+    )
+
+    assert facts["top_experiment_name"] == "exp_1"
+    assert facts["second_experiment_name"] == "exp_2"
+    assert facts["worst_experiment_name"] == "exp_3"
+    assert facts["top_vs_second_gap"] == pytest.approx(0.2)
+    assert facts["best_vs_worst_gap"] == pytest.approx(0.5)
+
+
+def test_build_comparison_facts_calculates_ascending_gaps():
+    facts = build_comparison_facts(
+        _default_comparison_payload(
+            [0.1, 0.3, 0.8],
+            descending=False,
+        )
+    )
+
+    assert facts["top_vs_second_gap"] == pytest.approx(0.2)
+    assert facts["best_vs_worst_gap"] == pytest.approx(0.7)
+
+
+def test_build_comparison_facts_supports_negative_ranked_values():
+    facts = build_comparison_facts(
+        _default_comparison_payload([-1.0, -2.0, -4.0])
+    )
+
+    assert facts["top_value"] == pytest.approx(-1.0)
+    assert facts["top_vs_second_gap"] == pytest.approx(1.0)
+    assert facts["best_vs_worst_gap"] == pytest.approx(3.0)
+
+
+def test_build_comparison_facts_supports_zero_ranked_values():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0, -1, -2])
+    )
+
+    assert facts["top_value"] == 0
+    assert facts["top_vs_second_gap"] == 1
+    assert facts["best_vs_worst_gap"] == 2
+
+
+def test_build_comparison_facts_extracts_default_best_racc():
+    payload = _default_comparison_payload(
+        [0.92, 0.90],
+        sort_by="best_racc",
+    )
+    payload["comparison_records"][0]["best_r2"] = 0.1
+    payload["comparison_records"][1]["best_r2"] = 0.99
+
+    facts = build_comparison_facts(payload)
+
+    assert facts["sort_by"] == "best_racc"
+    assert facts["top_value"] == pytest.approx(0.92)
+
+
+def test_build_comparison_facts_extracts_dynamic_best_value():
+    facts = build_comparison_facts(
+        _dynamic_comparison_payload([0.08, 0.10, 0.14])
+    )
+
+    assert facts["sort_by"] == "mae"
+    assert facts["descending"] is False
+    assert facts["top_value"] == pytest.approx(0.08)
+    assert facts["second_value"] == pytest.approx(0.10)
+    assert facts["worst_value"] == pytest.approx(0.14)
+
+
+def test_dynamic_minimize_comparison_has_positive_gaps():
+    facts = build_comparison_facts(
+        _dynamic_comparison_payload([0.07, 0.08, 0.11])
+    )
+
+    assert facts["top_vs_second_gap"] == pytest.approx(0.01)
+    assert facts["best_vs_worst_gap"] == pytest.approx(0.04)
+
+
+def test_build_comparison_facts_reports_tied_best_experiments():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.9, 0.8])
+    )
+
+    assert facts["top_vs_second_gap"] == pytest.approx(0.0)
+    assert facts["tied_best_experiments"] == ["exp_1", "exp_2"]
+
+
+def test_build_comparison_facts_reports_all_ranked_experiments_tied():
+    facts = build_comparison_facts(
+        _dynamic_comparison_payload([0.2, 0.2, 0.2])
+    )
+
+    assert facts["tied_best_experiments"] == [
+        "exp_1",
+        "exp_2",
+        "exp_3",
+    ]
+    assert facts["top_vs_second_gap"] == pytest.approx(0.0)
+    assert facts["best_vs_worst_gap"] == pytest.approx(0.0)
+
+
+def test_build_comparison_facts_calculates_success_rate():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.8], failed=2)
+    )
+
+    assert facts["success_rate"] == pytest.approx(0.5)
+
+
+def test_build_comparison_facts_does_not_modify_payload():
+    payload = _dynamic_comparison_payload(
+        [0.08, 0.09],
+        failed=1,
+    )
+    original_payload = deepcopy(payload)
+
+    build_comparison_facts(payload)
+
+    assert payload == original_payload
+
+
+def test_build_comparison_facts_returns_json_friendly_data():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.8], failed=1)
+    )
+
+    assert json.loads(json.dumps(facts, allow_nan=False)) == facts
+
+
+@pytest.mark.parametrize("invalid_payload", [None, [], (), "payload", 1])
+def test_build_comparison_facts_rejects_non_mapping(invalid_payload):
+    with pytest.raises(
+        TypeError,
+        match="^comparison_payload must be a mapping$",
+    ):
+        build_comparison_facts(invalid_payload)
+
+
+def test_build_comparison_facts_rejects_non_mapping_counts():
+    payload = _default_comparison_payload([0.9])
+    payload["experiment_counts"] = []
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"^comparison_payload\['experiment_counts'\] "
+            r"must be a mapping$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+@pytest.mark.parametrize("key", ["total", "successful", "failed"])
+@pytest.mark.parametrize("invalid_value", [True, 1.0, "1", None])
+def test_build_comparison_facts_rejects_non_integer_counts(
+    key,
+    invalid_value,
+):
+    payload = _default_comparison_payload([0.9])
+    payload["experiment_counts"][key] = invalid_value
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            rf"^experiment_counts\['{key}'\] "
+            r"must be an integer$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+@pytest.mark.parametrize("key", ["total", "successful", "failed"])
+def test_build_comparison_facts_rejects_negative_counts(key):
+    payload = _default_comparison_payload([0.9])
+    payload["experiment_counts"][key] = -1
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            rf"^experiment_counts\['{key}'\] "
+            r"must be non-negative$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+def test_build_comparison_facts_rejects_inconsistent_counts():
+    payload = _default_comparison_payload([0.9])
+    payload["experiment_counts"]["total"] = 5
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "^experiment counts must satisfy "
+            "total == successful \\+ failed$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+def test_build_comparison_facts_rejects_non_sequence_records():
+    payload = _default_comparison_payload([0.9])
+    payload["comparison_records"] = {}
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"^comparison_payload\['comparison_records'\] "
+            r"must be a sequence$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+def test_build_comparison_facts_rejects_record_count_mismatch():
+    payload = _default_comparison_payload([0.9])
+    payload["comparison_records"].append(
+        deepcopy(payload["comparison_records"][0])
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "^comparison_records length must equal "
+            "successful experiment count$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+@pytest.mark.parametrize("invalid_sort_by", [None, 1, True, []])
+def test_build_comparison_facts_rejects_non_string_sort_by(
+    invalid_sort_by,
+):
+    payload = _default_comparison_payload([0.9])
+    payload["sort_by"] = invalid_sort_by
+
+    with pytest.raises(
+        TypeError,
+        match=r"^comparison_payload\['sort_by'\] must be a string$",
+    ):
+        build_comparison_facts(payload)
+
+
+def test_build_comparison_facts_rejects_empty_sort_by():
+    payload = _default_comparison_payload([0.9])
+    payload["sort_by"] = ""
+
+    with pytest.raises(
+        ValueError,
+        match=r"^comparison_payload\['sort_by'\] must not be empty$",
+    ):
+        build_comparison_facts(payload)
+
+
+@pytest.mark.parametrize("invalid_descending", [0, 1, None, "true"])
+def test_build_comparison_facts_rejects_non_boolean_descending(
+    invalid_descending,
+):
+    payload = _default_comparison_payload([0.9])
+    payload["descending"] = invalid_descending
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"^comparison_payload\['descending'\] "
+            r"must be a boolean$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+def test_build_comparison_facts_rejects_non_mapping_record():
+    payload = _default_comparison_payload([0.9])
+    payload["comparison_records"][0] = []
+
+    with pytest.raises(
+        TypeError,
+        match=r"^comparison_records\[0\] must be a mapping$",
+    ):
+        build_comparison_facts(payload)
+
+
+@pytest.mark.parametrize("invalid_name", [None, 1, True, []])
+def test_build_comparison_facts_rejects_non_string_name(invalid_name):
+    payload = _default_comparison_payload([0.9])
+    payload["comparison_records"][0]["experiment_name"] = invalid_name
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"^comparison_records\[0\]\['experiment_name'\] "
+            r"must be a string$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+def test_build_comparison_facts_rejects_empty_experiment_name():
+    payload = _default_comparison_payload([0.9])
+    payload["comparison_records"][0]["experiment_name"] = ""
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^comparison_records\[0\]\['experiment_name'\] "
+            r"must not be empty$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+def test_build_comparison_facts_propagates_missing_default_metric_key():
+    payload = _default_comparison_payload([0.9])
+    del payload["comparison_records"][0]["best_r2"]
+
+    with pytest.raises(KeyError) as error:
+        build_comparison_facts(payload)
+
+    assert error.value.args == ("best_r2",)
+
+
+def test_build_comparison_facts_propagates_missing_dynamic_metrics_key():
+    payload = _dynamic_comparison_payload([0.08])
+    del payload["comparison_records"][0]["metrics"]
+
+    with pytest.raises(KeyError) as error:
+        build_comparison_facts(payload)
+
+    assert error.value.args == ("metrics",)
+
+
+@pytest.mark.parametrize("invalid_value", [None, "0.9", True, []])
+def test_build_comparison_facts_rejects_non_numeric_ranked_value(
+    invalid_value,
+):
+    payload = _default_comparison_payload([0.9])
+    payload["comparison_records"][0]["best_r2"] = invalid_value
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            "^comparison_records\\[0\\] ranked metric "
+            "value must be a number$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_build_comparison_facts_rejects_non_finite_ranked_value(
+    invalid_value,
+):
+    payload = _default_comparison_payload([0.9])
+    payload["comparison_records"][0]["best_r2"] = invalid_value
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "^comparison_records\\[0\\] ranked metric "
+            "value must be finite$"
+        ),
+    ):
+        build_comparison_facts(payload)
+
+
+def test_no_successful_experiments_diagnostic_has_fixed_content():
+    facts = build_comparison_facts(
+        _default_comparison_payload([], failed=2)
+    )
+    diagnostic = _comparison_diagnostic_by_code(
+        facts,
+        "no_successful_experiments",
+    )
+
+    assert diagnostic.severity == "warning"
+    assert diagnostic.message == (
+        "No experiments were analyzed successfully."
+    )
+    assert list(diagnostic.evidence) == [
+        "total_experiments",
+        "failed_experiments",
+    ]
+    assert dict(diagnostic.evidence) == {
+        "total_experiments": 2,
+        "failed_experiments": 2,
+    }
+
+
+def test_failed_experiments_present_diagnostic_has_fixed_content():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9], failed=2)
+    )
+    diagnostic = _comparison_diagnostic_by_code(
+        facts,
+        "failed_experiments_present",
+    )
+
+    assert diagnostic.severity == "warning"
+    assert diagnostic.message == (
+        "One or more experiments failed during analysis."
+    )
+    assert list(diagnostic.evidence) == [
+        "failed_experiments",
+        "total_experiments",
+    ]
+    assert dict(diagnostic.evidence) == {
+        "failed_experiments": 2,
+        "total_experiments": 3,
+    }
+
+
+def test_single_successful_experiment_diagnostic_has_fixed_content():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9])
+    )
+    diagnostic = _comparison_diagnostic_by_code(
+        facts,
+        "single_successful_experiment",
+    )
+
+    assert diagnostic.severity == "info"
+    assert diagnostic.message == (
+        "Only one experiment was analyzed successfully."
+    )
+    assert list(diagnostic.evidence) == [
+        "successful_experiments",
+        "top_experiment_name",
+    ]
+    assert dict(diagnostic.evidence) == {
+        "successful_experiments": 1,
+        "top_experiment_name": "exp_1",
+    }
+
+
+def test_tied_best_experiments_diagnostic_has_fixed_content():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.9, 0.8])
+    )
+    diagnostic = _comparison_diagnostic_by_code(
+        facts,
+        "tied_best_experiments",
+    )
+
+    assert diagnostic.severity == "info"
+    assert diagnostic.message == (
+        "Multiple experiments share the best ranked value."
+    )
+    assert list(diagnostic.evidence) == [
+        "sort_by",
+        "top_value",
+        "experiment_names",
+    ]
+    assert dict(diagnostic.evidence) == {
+        "sort_by": "best_r2",
+        "top_value": 0.9,
+        "experiment_names": ["exp_1", "exp_2"],
+    }
+
+
+def test_build_comparison_diagnostics_skips_inactive_rules():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.8])
+    )
+
+    assert build_comparison_diagnostics(facts) == ()
+
+
+def test_build_comparison_diagnostics_has_stable_rule_order():
+    facts = {
+        "has_successful_experiments": False,
+        "has_failures": True,
+        "single_successful_experiment": True,
+        "tied_best_experiments": ["exp_1", "exp_2"],
+        "total_experiments": 2,
+        "failed_experiments": 2,
+        "successful_experiments": 1,
+        "top_experiment_name": "exp_1",
+        "sort_by": "best_r2",
+        "top_value": 0.9,
+    }
+
+    assert [
+        diagnostic.code
+        for diagnostic in build_comparison_diagnostics(facts)
+    ] == [
+        "no_successful_experiments",
+        "failed_experiments_present",
+        "single_successful_experiment",
+        "tied_best_experiments",
+    ]
+
+
+def test_build_comparison_diagnostics_returns_tuple():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9], failed=1)
+    )
+
+    assert isinstance(build_comparison_diagnostics(facts), tuple)
+
+
+def test_build_comparison_diagnostics_does_not_modify_facts():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.9], failed=1)
+    )
+    original_facts = deepcopy(facts)
+
+    build_comparison_diagnostics(facts)
+
+    assert facts == original_facts
+
+
+def test_comparison_diagnostic_copies_tied_name_evidence():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.9])
+    )
+    diagnostic = _comparison_diagnostic_by_code(
+        facts,
+        "tied_best_experiments",
+    )
+
+    facts["tied_best_experiments"].append("exp_3")
+
+    assert diagnostic.evidence["experiment_names"] == [
+        "exp_1",
+        "exp_2",
+    ]
+
+
+def test_build_comparison_diagnostics_propagates_missing_key():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9])
+    )
+    del facts["has_successful_experiments"]
+
+    with pytest.raises(KeyError) as error:
+        build_comparison_diagnostics(facts)
+
+    assert error.value.args == ("has_successful_experiments",)
+
+
+@pytest.mark.parametrize("invalid_facts", [None, [], (), "facts", 1])
+def test_build_comparison_diagnostics_rejects_non_mapping(
+    invalid_facts,
+):
+    with pytest.raises(TypeError, match="^facts must be a mapping$"):
+        build_comparison_diagnostics(invalid_facts)
+
+
+def test_all_comparison_diagnostics_are_json_serializable():
+    facts = build_comparison_facts(
+        _default_comparison_payload([0.9, 0.9], failed=1)
+    )
+    serialized = [
+        diagnostic_to_dict(diagnostic)
+        for diagnostic in build_comparison_diagnostics(facts)
+    ]
+
+    assert json.loads(json.dumps(serialized, allow_nan=False)) == serialized
