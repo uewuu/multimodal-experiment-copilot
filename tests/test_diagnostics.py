@@ -7,11 +7,14 @@ import pytest
 
 from diagnostics import (
     Diagnostic,
+    Recommendation,
     build_comparison_diagnostics,
     build_comparison_facts,
     build_metric_diagnostics,
     build_metric_facts,
+    build_recommendations,
     diagnostic_to_dict,
+    recommendation_to_dict,
 )
 
 
@@ -1662,6 +1665,419 @@ def test_all_comparison_diagnostics_are_json_serializable():
     serialized = [
         diagnostic_to_dict(diagnostic)
         for diagnostic in build_comparison_diagnostics(facts)
+    ]
+
+    assert json.loads(json.dumps(serialized, allow_nan=False)) == serialized
+
+# ---------------------------------------------------------------------------
+# Stage 9E-1: deterministic diagnostic recommendations
+# ---------------------------------------------------------------------------
+
+
+def _recommendation() -> Recommendation:
+    return Recommendation(
+        code="restore_best_checkpoint",
+        message=(
+            "Prefer the best checkpoint over the final checkpoint and "
+            "review the cause of recent regression."
+        ),
+        diagnostic_codes=(
+            "post_best_regression",
+            "recent_degradation",
+        ),
+    )
+
+
+def _diagnostic_with_code(code: str) -> Diagnostic:
+    return Diagnostic(
+        code=code,
+        severity="warning",
+        message=f"Diagnostic for {code}.",
+        evidence={},
+    )
+
+
+def test_recommendation_accepts_valid_values():
+    recommendation = _recommendation()
+
+    assert recommendation.code == "restore_best_checkpoint"
+    assert recommendation.message.startswith("Prefer the best checkpoint")
+    assert recommendation.diagnostic_codes == (
+        "post_best_regression",
+        "recent_degradation",
+    )
+
+
+def test_recommendation_fields_have_stable_order():
+    assert [field.name for field in fields(Recommendation)] == [
+        "code",
+        "message",
+        "diagnostic_codes",
+    ]
+
+
+def test_recommendation_is_frozen():
+    recommendation = _recommendation()
+
+    with pytest.raises(FrozenInstanceError):
+        recommendation.code = "changed"
+
+
+def test_recommendation_normalizes_diagnostic_codes_to_tuple():
+    recommendation = Recommendation(
+        "valid_recommendation",
+        "Message",
+        ["first_code", "second_code"],
+    )
+
+    assert recommendation.diagnostic_codes == (
+        "first_code",
+        "second_code",
+    )
+    assert type(recommendation.diagnostic_codes) is tuple
+
+
+@pytest.mark.parametrize("invalid_code", [None, 1, True, b"valid_code"])
+def test_recommendation_rejects_non_string_code(invalid_code):
+    with pytest.raises(TypeError, match="^code must be a string$"):
+        Recommendation(invalid_code, "Message", ("diagnostic_code",))
+
+
+@pytest.mark.parametrize(
+    "invalid_code",
+    [
+        "",
+        "RestoreBest",
+        "restore-best",
+        "restore best",
+        "_restore_best",
+        "restore_best_",
+        "restore__best",
+    ],
+)
+def test_recommendation_rejects_invalid_code(invalid_code):
+    with pytest.raises(
+        ValueError,
+        match="^code must be a non-empty snake_case string$",
+    ):
+        Recommendation(invalid_code, "Message", ("diagnostic_code",))
+
+
+@pytest.mark.parametrize("invalid_message", [None, 1, True, b"Message"])
+def test_recommendation_rejects_non_string_message(invalid_message):
+    with pytest.raises(TypeError, match="^message must be a string$"):
+        Recommendation(
+            "valid_recommendation",
+            invalid_message,
+            ("diagnostic_code",),
+        )
+
+
+@pytest.mark.parametrize("invalid_message", ["", " ", "\t\r\n"])
+def test_recommendation_rejects_empty_message(invalid_message):
+    with pytest.raises(ValueError, match="^message must not be empty$"):
+        Recommendation(
+            "valid_recommendation",
+            invalid_message,
+            ("diagnostic_code",),
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_codes",
+    [None, 1, {"diagnostic_code": True}, "diagnostic_code", b"code"],
+)
+def test_recommendation_rejects_invalid_diagnostic_codes_container(
+    invalid_codes,
+):
+    with pytest.raises(
+        TypeError,
+        match="^diagnostic_codes must be a sequence$",
+    ):
+        Recommendation(
+            "valid_recommendation",
+            "Message",
+            invalid_codes,
+        )
+
+
+def test_recommendation_rejects_empty_diagnostic_codes():
+    with pytest.raises(
+        ValueError,
+        match="^diagnostic_codes must not be empty$",
+    ):
+        Recommendation("valid_recommendation", "Message", ())
+
+
+@pytest.mark.parametrize("invalid_code", [None, 1, True, b"code"])
+def test_recommendation_rejects_non_string_diagnostic_code(
+    invalid_code,
+):
+    with pytest.raises(
+        TypeError,
+        match=r"^diagnostic_codes\[0\] must be a string$",
+    ):
+        Recommendation(
+            "valid_recommendation",
+            "Message",
+            (invalid_code,),
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_code",
+    ["", "DiagnosticCode", "diagnostic-code", "diagnostic code"],
+)
+def test_recommendation_rejects_invalid_diagnostic_code(
+    invalid_code,
+):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^diagnostic_codes\[0\] must be a "
+            r"non-empty snake_case string$"
+        ),
+    ):
+        Recommendation(
+            "valid_recommendation",
+            "Message",
+            (invalid_code,),
+        )
+
+
+def test_recommendation_rejects_duplicate_diagnostic_codes():
+    with pytest.raises(
+        ValueError,
+        match="^diagnostic_codes must not contain duplicates$",
+    ):
+        Recommendation(
+            "valid_recommendation",
+            "Message",
+            ("same_code", "same_code"),
+        )
+
+
+def test_recommendation_to_dict_has_stable_field_order():
+    result = recommendation_to_dict(_recommendation())
+
+    assert list(result) == [
+        "code",
+        "message",
+        "diagnostic_codes",
+    ]
+
+
+def test_recommendation_to_dict_returns_json_friendly_data():
+    result = recommendation_to_dict(_recommendation())
+
+    assert type(result) is dict
+    assert type(result["diagnostic_codes"]) is list
+    assert json.loads(json.dumps(result, allow_nan=False)) == result
+
+
+def test_recommendation_to_dict_result_is_independent():
+    recommendation = _recommendation()
+    result = recommendation_to_dict(recommendation)
+
+    result["diagnostic_codes"].append("another_code")
+
+    assert recommendation.diagnostic_codes == (
+        "post_best_regression",
+        "recent_degradation",
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_recommendation",
+    [None, {}, "recommendation", 1],
+)
+def test_recommendation_to_dict_rejects_invalid_value(
+    invalid_recommendation,
+):
+    with pytest.raises(
+        TypeError,
+        match="^recommendation must be a Recommendation$",
+    ):
+        recommendation_to_dict(invalid_recommendation)
+
+
+def test_build_recommendations_returns_empty_tuple_for_no_diagnostics():
+    assert build_recommendations(()) == ()
+
+
+def test_build_recommendations_returns_tuple():
+    result = build_recommendations(
+        (_diagnostic_with_code("recent_degradation"),)
+    )
+
+    assert isinstance(result, tuple)
+
+
+@pytest.mark.parametrize(
+    "invalid_diagnostics",
+    [None, 1, {}, "diagnostic", b"diagnostic"],
+)
+def test_build_recommendations_rejects_invalid_container(
+    invalid_diagnostics,
+):
+    with pytest.raises(
+        TypeError,
+        match="^diagnostics must be a sequence$",
+    ):
+        build_recommendations(invalid_diagnostics)
+
+
+@pytest.mark.parametrize("invalid_member", [None, {}, "diagnostic", 1])
+def test_build_recommendations_rejects_invalid_member(invalid_member):
+    with pytest.raises(
+        TypeError,
+        match=r"^diagnostics\[0\] must be a Diagnostic$",
+    ):
+        build_recommendations([invalid_member])
+
+
+def test_build_recommendations_ignores_unknown_diagnostic_codes():
+    diagnostics = (
+        _diagnostic_with_code("future_unknown_diagnostic"),
+    )
+
+    assert build_recommendations(diagnostics) == ()
+
+
+def test_build_recommendations_consolidates_metric_history_repairs():
+    diagnostics = (
+        _diagnostic_with_code("non_monotonic_epochs"),
+        _diagnostic_with_code("duplicate_epochs"),
+    )
+
+    recommendation = build_recommendations(diagnostics)[0]
+
+    assert recommendation.code == "repair_metric_history"
+    assert recommendation.diagnostic_codes == (
+        "duplicate_epochs",
+        "non_monotonic_epochs",
+    )
+
+
+def test_build_recommendations_consolidates_regression_signals():
+    diagnostics = (
+        _diagnostic_with_code("recent_degradation"),
+        _diagnostic_with_code("post_best_regression"),
+    )
+
+    recommendation = build_recommendations(diagnostics)[0]
+
+    assert recommendation.code == "restore_best_checkpoint"
+    assert recommendation.diagnostic_codes == (
+        "post_best_regression",
+        "recent_degradation",
+    )
+
+
+def test_build_recommendations_deduplicates_repeated_diagnostics():
+    diagnostic = _diagnostic_with_code("recent_degradation")
+
+    recommendations = build_recommendations(
+        (diagnostic, diagnostic, diagnostic)
+    )
+
+    assert [item.code for item in recommendations] == [
+        "restore_best_checkpoint"
+    ]
+
+
+def test_build_recommendations_has_canonical_order():
+    diagnostics = (
+        _diagnostic_with_code("tied_best_experiments"),
+        _diagnostic_with_code("recent_degradation"),
+        _diagnostic_with_code("duplicate_epochs"),
+        _diagnostic_with_code("single_successful_experiment"),
+    )
+
+    assert [
+        recommendation.code
+        for recommendation in build_recommendations(diagnostics)
+    ] == [
+        "repair_metric_history",
+        "restore_best_checkpoint",
+        "add_comparison_experiments",
+        "apply_secondary_tie_breaker",
+    ]
+
+
+def test_build_recommendations_is_independent_of_input_order():
+    diagnostics = (
+        _diagnostic_with_code("duplicate_epochs"),
+        _diagnostic_with_code("recent_degradation"),
+        _diagnostic_with_code("single_successful_experiment"),
+    )
+
+    forward = build_recommendations(diagnostics)
+    reversed_result = build_recommendations(tuple(reversed(diagnostics)))
+
+    assert forward == reversed_result
+
+
+def test_build_recommendations_does_not_modify_input_sequence():
+    diagnostics = [
+        _diagnostic_with_code("recent_degradation"),
+        _diagnostic_with_code("post_best_regression"),
+    ]
+    original = list(diagnostics)
+
+    build_recommendations(diagnostics)
+
+    assert diagnostics == original
+
+
+@pytest.mark.parametrize(
+    ("diagnostic_code", "recommendation_code"),
+    [
+        ("duplicate_epochs", "repair_metric_history"),
+        ("non_monotonic_epochs", "repair_metric_history"),
+        ("best_at_first_record", "verify_training_progress"),
+        ("no_improvement", "verify_training_progress"),
+        ("best_at_last_record", "consider_extended_training"),
+        ("recent_improvement", "consider_extended_training"),
+        ("post_best_regression", "restore_best_checkpoint"),
+        ("recent_degradation", "restore_best_checkpoint"),
+        (
+            "insufficient_history_for_trend",
+            "collect_more_history",
+        ),
+        ("recent_flat", "review_optimization_plateau"),
+        ("recent_mixed", "avoid_trend_conclusion"),
+        ("no_successful_experiments", "resolve_analysis_failures"),
+        ("failed_experiments_present", "resolve_analysis_failures"),
+        (
+            "single_successful_experiment",
+            "add_comparison_experiments",
+        ),
+        ("tied_best_experiments", "apply_secondary_tie_breaker"),
+    ],
+)
+def test_every_current_diagnostic_code_has_a_recommendation(
+    diagnostic_code,
+    recommendation_code,
+):
+    recommendations = build_recommendations(
+        (_diagnostic_with_code(diagnostic_code),)
+    )
+
+    assert [item.code for item in recommendations] == [
+        recommendation_code
+    ]
+
+
+def test_all_recommendations_are_json_serializable():
+    diagnostics = (
+        _diagnostic_with_code("duplicate_epochs"),
+        _diagnostic_with_code("recent_degradation"),
+        _diagnostic_with_code("failed_experiments_present"),
+    )
+    serialized = [
+        recommendation_to_dict(recommendation)
+        for recommendation in build_recommendations(diagnostics)
     ]
 
     assert json.loads(json.dumps(serialized, allow_nan=False)) == serialized

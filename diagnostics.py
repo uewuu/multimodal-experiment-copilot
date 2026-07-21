@@ -62,6 +62,67 @@ class Diagnostic:
         )
 
 
+@dataclass(frozen=True)
+class Recommendation:
+    """描述一个由诊断规则触发的确定性建议。"""
+
+    code: str
+    message: str
+    diagnostic_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.code, str):
+            raise TypeError("code must be a string")
+        if fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", self.code) is None:
+            raise ValueError(
+                "code must be a non-empty snake_case string"
+            )
+
+        if not isinstance(self.message, str):
+            raise TypeError("message must be a string")
+        if not self.message.strip():
+            raise ValueError("message must not be empty")
+
+        if (
+            isinstance(self.diagnostic_codes, (str, bytes, bytearray))
+            or not isinstance(self.diagnostic_codes, Sequence)
+        ):
+            raise TypeError("diagnostic_codes must be a sequence")
+        if not self.diagnostic_codes:
+            raise ValueError("diagnostic_codes must not be empty")
+
+        validated_codes: list[str] = []
+        seen_codes: set[str] = set()
+        for index, diagnostic_code in enumerate(self.diagnostic_codes):
+            if not isinstance(diagnostic_code, str):
+                raise TypeError(
+                    f"diagnostic_codes[{index}] must be a string"
+                )
+            if (
+                fullmatch(
+                    r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*",
+                    diagnostic_code,
+                )
+                is None
+            ):
+                raise ValueError(
+                    f"diagnostic_codes[{index}] must be a "
+                    "non-empty snake_case string"
+                )
+            if diagnostic_code in seen_codes:
+                raise ValueError(
+                    "diagnostic_codes must not contain duplicates"
+                )
+            seen_codes.add(diagnostic_code)
+            validated_codes.append(diagnostic_code)
+
+        object.__setattr__(
+            self,
+            "diagnostic_codes",
+            tuple(validated_codes),
+        )
+
+
 def diagnostic_to_dict(
     diagnostic: Diagnostic,
 ) -> dict[str, object]:
@@ -75,6 +136,171 @@ def diagnostic_to_dict(
         "message": diagnostic.message,
         "evidence": deepcopy(dict(diagnostic.evidence)),
     }
+
+
+def recommendation_to_dict(
+    recommendation: Recommendation,
+) -> dict[str, object]:
+    """将建议转换为可安全序列化的普通字典。"""
+    if not isinstance(recommendation, Recommendation):
+        raise TypeError("recommendation must be a Recommendation")
+
+    return {
+        "code": recommendation.code,
+        "message": recommendation.message,
+        "diagnostic_codes": list(recommendation.diagnostic_codes),
+    }
+
+
+_RECOMMENDATION_RULES: tuple[
+    tuple[str, str, tuple[str, ...]],
+    ...,
+] = (
+    (
+        "repair_metric_history",
+        (
+            "Repair duplicate or non-monotonic epoch records before "
+            "interpreting metric trends."
+        ),
+        (
+            "duplicate_epochs",
+            "non_monotonic_epochs",
+        ),
+    ),
+    (
+        "verify_training_progress",
+        (
+            "Review the training setup and metric pipeline because the "
+            "run shows little or no improvement beyond its starting point."
+        ),
+        (
+            "best_at_first_record",
+            "no_improvement",
+        ),
+    ),
+    (
+        "consider_extended_training",
+        (
+            "Consider extending training or patience because the best "
+            "value occurs at the end or the recent trend is still improving."
+        ),
+        (
+            "best_at_last_record",
+            "recent_improvement",
+        ),
+    ),
+    (
+        "restore_best_checkpoint",
+        (
+            "Prefer the best checkpoint over the final checkpoint and "
+            "review the cause of recent regression."
+        ),
+        (
+            "post_best_regression",
+            "recent_degradation",
+        ),
+    ),
+    (
+        "collect_more_history",
+        (
+            "Collect at least two metric records before drawing trend "
+            "conclusions."
+        ),
+        (
+            "insufficient_history_for_trend",
+        ),
+    ),
+    (
+        "review_optimization_plateau",
+        (
+            "Review learning-rate, optimization, or stopping settings "
+            "because the recent metric history is flat."
+        ),
+        (
+            "recent_flat",
+        ),
+    ),
+    (
+        "avoid_trend_conclusion",
+        (
+            "Avoid strong trend conclusions until additional records "
+            "clarify the mixed recent direction."
+        ),
+        (
+            "recent_mixed",
+        ),
+    ),
+    (
+        "resolve_analysis_failures",
+        (
+            "Inspect failed experiment logs and repair analysis inputs "
+            "before drawing comparison conclusions."
+        ),
+        (
+            "no_successful_experiments",
+            "failed_experiments_present",
+        ),
+    ),
+    (
+        "add_comparison_experiments",
+        (
+            "Add more successful experiments before making comparative "
+            "claims."
+        ),
+        (
+            "single_successful_experiment",
+        ),
+    ),
+    (
+        "apply_secondary_tie_breaker",
+        (
+            "Use a secondary metric, complexity, or stability criterion "
+            "to distinguish tied best experiments."
+        ),
+        (
+            "tied_best_experiments",
+        ),
+    ),
+)
+
+
+def build_recommendations(
+    diagnostics: Sequence[Diagnostic],
+) -> tuple[Recommendation, ...]:
+    """根据诊断代码生成固定顺序、去重后的结构化建议。"""
+    if (
+        isinstance(diagnostics, (str, bytes, bytearray))
+        or not isinstance(diagnostics, Sequence)
+    ):
+        raise TypeError("diagnostics must be a sequence")
+
+    observed_codes: set[str] = set()
+    for index, diagnostic in enumerate(diagnostics):
+        if not isinstance(diagnostic, Diagnostic):
+            raise TypeError(
+                f"diagnostics[{index}] must be a Diagnostic"
+            )
+        observed_codes.add(diagnostic.code)
+
+    recommendations: list[Recommendation] = []
+    for recommendation_code, message, trigger_codes in (
+        _RECOMMENDATION_RULES
+    ):
+        matched_codes = tuple(
+            diagnostic_code
+            for diagnostic_code in trigger_codes
+            if diagnostic_code in observed_codes
+        )
+        if matched_codes:
+            recommendations.append(
+                Recommendation(
+                    code=recommendation_code,
+                    message=message,
+                    diagnostic_codes=matched_codes,
+                )
+            )
+
+    return tuple(recommendations)
 
 
 def _normalized_change(
