@@ -3,6 +3,11 @@
 import json
 from pathlib import Path
 
+from compare_experiments import (
+    analyze_experiment_dirs,
+    build_comparison_payload,
+    find_experiment_dirs,
+)
 from generate_report import resolve_experiment_paths
 from read_metrics_config import read_metric_specs_config
 from summarize_experiment import build_experiment_summary
@@ -84,3 +89,76 @@ def analyze_experiment(
         allow_nan=False,
     )
     return result
+
+
+def compare_experiments(
+    experiment_root: str,
+    sort_by: str | None = None,
+    descending: bool = True,
+    *,
+    metrics_config: str | None = None,
+    include_diagnostics: bool = False,
+) -> dict:
+    """Compare experiment directories and return a JSON-safe payload."""
+    if not isinstance(experiment_root, str):
+        raise TypeError("experiment_root must be a string")
+    if not experiment_root.strip():
+        raise ValueError(
+            "experiment_root must not be empty or whitespace"
+        )
+
+    if sort_by is not None:
+        if not isinstance(sort_by, str):
+            raise TypeError("sort_by must be a string or None")
+        if not sort_by.strip():
+            raise ValueError(
+                "sort_by must not be empty or whitespace"
+            )
+
+    if metrics_config is not None:
+        if not isinstance(metrics_config, str):
+            raise TypeError(
+                "metrics_config must be a string or None"
+            )
+        if not metrics_config.strip():
+            raise ValueError(
+                "metrics_config must not be empty or whitespace"
+            )
+
+    if not isinstance(descending, bool):
+        raise TypeError("descending must be a boolean")
+    if not isinstance(include_diagnostics, bool):
+        raise TypeError("include_diagnostics must be a boolean")
+
+    root_path = Path(experiment_root)
+    metric_specs = (
+        None
+        if metrics_config is None
+        else read_metric_specs_config(Path(metrics_config))
+    )
+    experiment_dirs = find_experiment_dirs(root_path)
+    batch_result = analyze_experiment_dirs(
+        experiment_dirs,
+        metric_specs=metric_specs,
+    )
+
+    if sort_by is not None:
+        resolved_sort_by = sort_by
+    elif metric_specs is None:
+        resolved_sort_by = "best_r2"
+    else:
+        resolved_sort_by = metric_specs[0].name
+
+    payload = build_comparison_payload(
+        batch_result,
+        sort_by=resolved_sort_by,
+        descending=descending,
+        metric_specs=metric_specs,
+        include_diagnostics=include_diagnostics,
+    )
+    json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return payload
