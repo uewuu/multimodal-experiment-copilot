@@ -12,9 +12,14 @@ from types import SimpleNamespace
 import pytest
 
 
-EXPECTED_PUBLIC_NAMES = [
+CORE_PUBLIC_NAMES = [
     "create_tool_call_response",
     "execute_tool_calls",
+]
+
+EXPECTED_PUBLIC_NAMES = [
+    *CORE_PUBLIC_NAMES,
+    "run_tool_call_cycle",
 ]
 
 
@@ -47,7 +52,7 @@ def _load_adapter_module():
 def _load_public_functions():
     package = _load_package()
     functions = []
-    for name in EXPECTED_PUBLIC_NAMES:
+    for name in CORE_PUBLIC_NAMES:
         if not hasattr(package, name):
             pytest.fail(
                 f"llm_adapters must publicly export {name}",

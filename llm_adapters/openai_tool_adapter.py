@@ -187,3 +187,115 @@ def execute_tool_calls(
         )
 
     return messages
+
+
+def _build_assistant_tool_call_message(
+    response: object,
+) -> dict | None:
+    choices = getattr(response, "choices", _MISSING)
+    if choices is _MISSING:
+        raise TypeError("response.choices is required")
+    if type(choices) is not list:
+        raise TypeError("response.choices must be a list")
+    if not choices:
+        raise ValueError("response.choices must not be empty")
+
+    message = getattr(choices[0], "message", _MISSING)
+    if message is _MISSING:
+        raise TypeError("response.choices[0].message is required")
+    if not _is_attribute_container(message):
+        raise TypeError(
+            "response.choices[0].message must be an attribute object"
+        )
+
+    role = getattr(message, "role", _MISSING)
+    role_path = "response.choices[0].message.role"
+    if role is _MISSING:
+        raise ValueError(f"{role_path} is required")
+    if not isinstance(role, str):
+        raise TypeError(f"{role_path} must be a string")
+    if role != "assistant":
+        raise ValueError(f"{role_path} must be 'assistant'")
+
+    content = getattr(message, "content", _MISSING)
+    content_path = "response.choices[0].message.content"
+    if content is _MISSING:
+        raise ValueError(f"{content_path} is required")
+    if content is not None and not isinstance(content, str):
+        raise TypeError(f"{content_path} must be a string or None")
+
+    tool_calls = getattr(message, "tool_calls", _MISSING)
+    tool_calls_path = "response.choices[0].message.tool_calls"
+    if tool_calls is _MISSING:
+        raise TypeError(f"{tool_calls_path} is required")
+    if tool_calls is None:
+        return None
+    if type(tool_calls) is not list:
+        raise TypeError(f"{tool_calls_path} must be a list")
+    if not tool_calls:
+        return None
+
+    validated_calls = [
+        _validate_tool_call(tool_call, index)
+        for index, tool_call in enumerate(tool_calls)
+    ]
+
+    serialized_tool_calls: list[dict] = []
+    for tool_call, (tool_call_id, function_name, _) in zip(
+        tool_calls,
+        validated_calls,
+        strict=True,
+    ):
+        serialized_tool_calls.append(
+            {
+                "id": tool_call_id,
+                "type": getattr(tool_call, "type"),
+                "function": {
+                    "name": function_name,
+                    "arguments": getattr(
+                        getattr(tool_call, "function"),
+                        "arguments",
+                    ),
+                },
+            }
+        )
+
+    return {
+        "role": role,
+        "content": content,
+        "tool_calls": serialized_tool_calls,
+    }
+
+
+def run_tool_call_cycle(
+    client: object,
+    *,
+    model: str,
+    messages: list[dict],
+    **request_options: object,
+) -> object:
+    """Run at most one tool execution step and one follow-up request."""
+    first_response = create_tool_call_response(
+        client,
+        model=model,
+        messages=messages,
+        **request_options,
+    )
+    assistant_message = _build_assistant_tool_call_message(
+        first_response
+    )
+    if assistant_message is None:
+        return first_response
+
+    tool_messages = execute_tool_calls(first_response)
+    follow_up_messages = [
+        *messages,
+        assistant_message,
+        *tool_messages,
+    ]
+    return create_tool_call_response(
+        client,
+        model=model,
+        messages=follow_up_messages,
+        **request_options,
+    )
