@@ -522,7 +522,7 @@ def test_environment_api_key_is_used_unchanged(
 
     create_openai_client()
 
-    assert _call_kwargs(fake_openai)["api_key"] is environment_key
+    assert _call_kwargs(fake_openai)["api_key"] == environment_key
 
 
 @pytest.mark.parametrize(
