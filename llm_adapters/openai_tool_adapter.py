@@ -1,11 +1,19 @@
 """Chat Completions-compatible tool calling adapter."""
 
+from dataclasses import dataclass
 import json
 
 from tool_layer import invoke_tool, list_tools
 
 
 _MISSING = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolCallCycleTrace:
+    response: object
+    assistant_message: dict[str, object] | None
+    tool_messages: tuple[dict[str, object], ...]
 
 
 def create_tool_call_response(
@@ -267,14 +275,13 @@ def _build_assistant_tool_call_message(
     }
 
 
-def run_tool_call_cycle(
+def _run_tool_call_cycle_with_trace(
     client: object,
     *,
     model: str,
     messages: list[dict],
     **request_options: object,
-) -> object:
-    """Run at most one tool execution step and one follow-up request."""
+) -> _ToolCallCycleTrace:
     first_response = create_tool_call_response(
         client,
         model=model,
@@ -285,17 +292,41 @@ def run_tool_call_cycle(
         first_response
     )
     if assistant_message is None:
-        return first_response
+        return _ToolCallCycleTrace(
+            response=first_response,
+            assistant_message=None,
+            tool_messages=(),
+        )
 
-    tool_messages = execute_tool_calls(first_response)
+    tool_messages = tuple(execute_tool_calls(first_response))
     follow_up_messages = [
         *messages,
         assistant_message,
         *tool_messages,
     ]
-    return create_tool_call_response(
+    return _ToolCallCycleTrace(
+        response=create_tool_call_response(
+            client,
+            model=model,
+            messages=follow_up_messages,
+            **request_options,
+        ),
+        assistant_message=assistant_message,
+        tool_messages=tool_messages,
+    )
+
+
+def run_tool_call_cycle(
+    client: object,
+    *,
+    model: str,
+    messages: list[dict],
+    **request_options: object,
+) -> object:
+    """Run at most one tool execution step and one follow-up request."""
+    return _run_tool_call_cycle_with_trace(
         client,
         model=model,
-        messages=follow_up_messages,
+        messages=messages,
         **request_options,
-    )
+    ).response
