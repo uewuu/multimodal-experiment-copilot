@@ -16,9 +16,6 @@ from types import SimpleNamespace
 import pytest
 
 
-_PYTHON = r"C:\Users\admin\.conda\envs\agent311\python.exe"
-
-
 class _SequentialCompletions:
     def __init__(self, responses: list[object]) -> None:
         self.responses = list(responses)
@@ -194,7 +191,7 @@ assert all(
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     completed = subprocess.run(
-        [_PYTHON, "-c", script],
+        [sys.executable, "-c", script],
         cwd=Path.cwd(),
         env=environment,
         text=True,
