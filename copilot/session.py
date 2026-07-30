@@ -304,5 +304,24 @@ class CopilotSession:
         ]
         return answer
 
+    def export_history(self) -> list[dict[str, object]]:
+        return [
+            {
+                "question": turn.question,
+                "answer": turn.answer,
+                "tool_call_content": turn.tool_call_content,
+                "tool_invocations": [
+                    {
+                        "tool_call_id": invocation.tool_call_id,
+                        "tool_name": invocation.tool_name,
+                        "arguments_json": invocation.arguments_json,
+                        "result_json": invocation.result_json,
+                    }
+                    for invocation in turn.tool_invocations
+                ],
+            }
+            for turn in self._history
+        ]
+
     def reset(self) -> None:
         self._history = ()
