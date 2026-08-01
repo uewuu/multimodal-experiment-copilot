@@ -975,3 +975,704 @@ def test_tool_trace_preserves_raw_arguments_and_strict_result_json(
     assert trace.arguments_json == arguments
     assert trace.result_json == '{"a":"中文","z":1}'
     assert json.loads(trace.result_json) == {"a": "中文", "z": 1}
+
+
+def _require_structured_session_result_method() -> object:
+    from copilot.session import CopilotSession
+
+    return getattr(CopilotSession, "ask_with_result")
+
+
+def _structured_session_result_tool_responses(
+    invocation_count: int,
+) -> list[object]:
+    return [
+        _response(
+            "working",
+            tool_calls=[
+                _tool_call(
+                    f"structured-call-{position}",
+                    f"structured-tool-{position}",
+                    f'{{ "position" : {position} }}',
+                )
+                for position in range(1, invocation_count + 1)
+            ],
+        ),
+        _response("structured final answer"),
+    ]
+
+
+def _structured_session_result_install_tool_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    result_or_error: object | None = None,
+) -> list[tuple[str, dict]]:
+    adapter = importlib.import_module(
+        "llm_adapters.openai_tool_adapter"
+    )
+    calls: list[tuple[str, dict]] = []
+
+    def invoke(name: str, arguments: dict) -> dict:
+        calls.append((name, arguments))
+        if isinstance(result_or_error, BaseException):
+            raise result_or_error
+        if result_or_error is not None:
+            return result_or_error  # type: ignore[return-value]
+        return {"position": arguments.get("position")}
+
+    monkeypatch.setattr(adapter, "invoke_tool", invoke)
+    return calls
+
+
+def _structured_session_result_assert_failure_transaction(
+    method: object,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    external_error: BaseException | None = None
+    expected_error: type[BaseException]
+    expected_request_delta = 1
+    expected_tool_calls = 0
+
+    if scenario == "first_provider":
+        external_error = RuntimeError("first provider failed")
+        failure_responses: list[object] = [external_error]
+        expected_error = RuntimeError
+    elif scenario == "malformed_tool_call":
+        failure_responses = [
+            _response(
+                "working",
+                tool_calls=[
+                    _tool_call("bad-json", "broken", "{")
+                ],
+            )
+        ]
+        expected_error = ValueError
+    elif scenario == "unknown_tool":
+        external_error = KeyError("unknown tool")
+        tool_calls = _structured_session_result_install_tool_recorder(
+            monkeypatch,
+            result_or_error=external_error,
+        )
+        failure_responses = _single_tool_responses()[:1]
+        expected_error = KeyError
+        expected_tool_calls = 1
+    elif scenario == "tool_execution":
+        external_error = RuntimeError("tool execution failed")
+        tool_calls = _structured_session_result_install_tool_recorder(
+            monkeypatch,
+            result_or_error=external_error,
+        )
+        failure_responses = _single_tool_responses()[:1]
+        expected_error = RuntimeError
+        expected_tool_calls = 1
+    elif scenario == "second_provider":
+        external_error = RuntimeError("second provider failed")
+        tool_calls = _structured_session_result_install_tool_recorder(
+            monkeypatch,
+        )
+        failure_responses = [
+            _single_tool_responses()[0],
+            external_error,
+        ]
+        expected_error = RuntimeError
+        expected_request_delta = 2
+        expected_tool_calls = 1
+    elif scenario == "serialization":
+        tool_calls = _structured_session_result_install_tool_recorder(
+            monkeypatch,
+            result_or_error={"invalid": object()},
+        )
+        failure_responses = _single_tool_responses()[:1]
+        expected_error = TypeError
+        expected_tool_calls = 1
+    elif scenario == "malformed_final_response":
+        failure_responses = [SimpleNamespace()]
+        expected_error = TypeError
+    elif scenario == "invalid_final_content":
+        failure_responses = [_response(None)]
+        expected_error = ValueError
+    elif scenario == "keyboard_interrupt":
+        external_error = KeyboardInterrupt()
+        failure_responses = [external_error]
+        expected_error = KeyboardInterrupt
+    elif scenario == "system_exit":
+        external_error = SystemExit(17)
+        failure_responses = [external_error]
+        expected_error = SystemExit
+    else:
+        raise AssertionError(f"unknown failure scenario: {scenario}")
+
+    session, client = _new_session(
+        [
+            _response("committed one"),
+            _response("committed two"),
+            *failure_responses,
+        ],
+        max_turns=2,
+    )
+    session.ask("committed question one")
+    session.ask("committed question two")
+    before = session.history
+    request_count = len(client.chat.completions.calls)
+
+    with pytest.raises(expected_error) as caught:
+        method(session, "failed structured question")  # type: ignore[operator]
+
+    if external_error is not None:
+        assert caught.value is external_error
+    assert session.history == before
+    assert all(
+        current is original
+        for current, original in zip(
+            session.history,
+            before,
+            strict=True,
+        )
+    )
+    assert session.turn_count == 2
+    assert len(client.chat.completions.calls) == (
+        request_count + expected_request_delta
+    )
+    assert client.close_calls == 0
+    if scenario in {
+        "unknown_tool",
+        "tool_execution",
+        "second_provider",
+        "serialization",
+    }:
+        assert len(tool_calls) == expected_tool_calls
+
+
+def test_structured_session_result_public_method_contract() -> None:
+    from typing import get_type_hints
+
+    from copilot.session import CopilotSession, CopilotTurn
+
+    method = _require_structured_session_result_method()
+    descriptor = inspect.getattr_static(
+        CopilotSession,
+        "ask_with_result",
+    )
+    signature = inspect.signature(method)
+    parameters = list(signature.parameters.values())
+
+    assert inspect.isfunction(descriptor)
+    assert [parameter.name for parameter in parameters] == [
+        "self",
+        "question",
+    ]
+    assert parameters[1].default is inspect.Parameter.empty
+    assert get_type_hints(method)["return"] is CopilotTurn
+    assert list(inspect.signature(CopilotSession.ask).parameters) == [
+        "self",
+        "question",
+    ]
+    assert get_type_hints(CopilotSession.ask)["return"] is str
+
+
+def test_structured_session_result_reuses_existing_data_models() -> None:
+    from copilot import CopilotToolInvocation, CopilotTurn
+    from copilot import session as session_module
+
+    _require_structured_session_result_method()
+
+    assert session_module.CopilotTurn is CopilotTurn
+    assert session_module.CopilotToolInvocation is CopilotToolInvocation
+    for name in (
+        "CopilotSessionResult",
+        "CopilotObservedTurn",
+        "CopilotSessionMetrics",
+    ):
+        assert not hasattr(session_module, name)
+
+
+def test_structured_session_result_no_tool_turn_returns_history_identity(
+) -> None:
+    from copilot.session import CopilotTurn
+
+    method = _require_structured_session_result_method()
+    session, _ = _new_session([_response("structured answer")])
+
+    turn = method(session, "structured question")  # type: ignore[operator]
+
+    assert type(turn) is CopilotTurn
+    assert turn.question == "structured question"
+    assert turn.answer == "structured answer"
+    assert turn.tool_call_content is None
+    assert turn.tool_invocations == ()
+    assert session.history == (turn,)
+    assert session.history[-1] is turn
+
+
+def test_structured_session_result_no_tool_turn_execution_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    method = _require_structured_session_result_method()
+    session, client = _new_session([_response("answer")])
+
+    def forbidden_network(*args: object, **kwargs: object) -> None:
+        raise AssertionError("real network access")
+
+    monkeypatch.setattr(socket, "create_connection", forbidden_network)
+    monkeypatch.setattr(socket.socket, "connect", forbidden_network)
+    method(session, "question")  # type: ignore[operator]
+
+    assert len(client.chat.completions.calls) == 1
+    assert session.turn_count == 1
+    assert client.close_calls == 0
+
+
+def test_structured_session_result_preserves_question_text() -> None:
+    method = _require_structured_session_result_method()
+    question = "  保留 structured 问题 🙂  "
+    session, _ = _new_session([_response("answer")])
+
+    turn = method(session, question)  # type: ignore[operator]
+
+    assert turn.question == question
+    assert session.history[-1].question == question
+
+
+def test_structured_session_result_single_tool_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    method = _require_structured_session_result_method()
+    arguments = '{ "experiment_dir" : "实验" }'
+    calls = _structured_session_result_install_tool_recorder(
+        monkeypatch,
+        result_or_error={"score": 0.75},
+    )
+    session, client = _new_session(
+        _single_tool_responses(arguments=arguments)
+    )
+
+    turn = method(session, "analyze")  # type: ignore[operator]
+    invocation = turn.tool_invocations[0]
+
+    assert calls == [
+        ("analyze_experiment", {"experiment_dir": "实验"})
+    ]
+    assert invocation.tool_call_id == "call-1"
+    assert invocation.tool_name == "analyze_experiment"
+    assert invocation.arguments_json == arguments
+    assert invocation.result_json == '{"score":0.75}'
+    assert len(client.chat.completions.calls) == 2
+    assert session.history[-1] is turn
+
+
+def test_structured_session_result_multiple_tool_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    method = _require_structured_session_result_method()
+    calls = _structured_session_result_install_tool_recorder(monkeypatch)
+    session, client = _new_session(
+        _structured_session_result_tool_responses(3)
+    )
+
+    turn = method(session, "run three tools")  # type: ignore[operator]
+
+    assert [item.tool_call_id for item in turn.tool_invocations] == [
+        "structured-call-1",
+        "structured-call-2",
+        "structured-call-3",
+    ]
+    assert [item.tool_name for item in turn.tool_invocations] == [
+        "structured-tool-1",
+        "structured-tool-2",
+        "structured-tool-3",
+    ]
+    assert [name for name, _ in calls] == [
+        "structured-tool-1",
+        "structured-tool-2",
+        "structured-tool-3",
+    ]
+    assert len(client.chat.completions.calls) == 2
+    assert session.history[-1] is turn
+
+
+def test_structured_session_result_preserves_tool_call_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    method = _require_structured_session_result_method()
+    _structured_session_result_install_tool_recorder(monkeypatch)
+    responses = _structured_session_result_tool_responses(1)
+    session, _ = _new_session(responses)
+
+    turn = method(session, "question")  # type: ignore[operator]
+
+    assert turn.tool_call_content == "working"
+
+
+def test_structured_session_result_ask_delegates_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from copilot.session import CopilotSession, CopilotTurn
+
+    _require_structured_session_result_method()
+    delegated: list[tuple[object, str]] = []
+    expected = CopilotTurn("question", "delegated answer", None, ())
+
+    def fake_ask_with_result(
+        self: object,
+        question: str,
+    ) -> CopilotTurn:
+        delegated.append((self, question))
+        return expected
+
+    monkeypatch.setattr(
+        CopilotSession,
+        "ask_with_result",
+        fake_ask_with_result,
+    )
+    session, client = _new_session([])
+
+    answer = session.ask("question")
+
+    assert answer == expected.answer
+    assert delegated == [(session, "question")]
+    assert client.chat.completions.calls == []
+    assert session.history == ()
+
+
+def test_structured_session_result_ask_has_single_tool_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _require_structured_session_result_method()
+    calls = _structured_session_result_install_tool_recorder(monkeypatch)
+    session, client = _new_session(
+        _structured_session_result_tool_responses(1)
+    )
+
+    answer = session.ask("question")
+
+    assert answer == "structured final answer"
+    assert len(client.chat.completions.calls) == 2
+    assert len(calls) == 1
+    assert session.turn_count == 1
+    assert client.close_calls == 0
+
+
+def test_structured_session_result_max_turns_one() -> None:
+    method = _require_structured_session_result_method()
+    session, _ = _new_session(
+        [_response("one"), _response("two")],
+        max_turns=1,
+    )
+
+    first = method(session, "first")  # type: ignore[operator]
+    second = method(session, "second")  # type: ignore[operator]
+
+    assert session.history == (second,)
+    assert session.history[-1] is second
+    assert first is not second
+
+
+def test_structured_session_result_bounded_history_order() -> None:
+    method = _require_structured_session_result_method()
+    session, _ = _new_session(
+        [_response("one"), _response("two"), _response("three")],
+        max_turns=2,
+    )
+
+    turns = [
+        method(session, question)  # type: ignore[operator]
+        for question in ("first", "second", "third")
+    ]
+
+    assert session.history == (turns[1], turns[2])
+    assert [turn.question for turn in session.history] == [
+        "second",
+        "third",
+    ]
+
+
+def test_structured_session_result_turn_count_matches_newest_turn() -> None:
+    method = _require_structured_session_result_method()
+    session, _ = _new_session(
+        [_response("one"), _response("two")],
+        max_turns=2,
+    )
+
+    method(session, "first")  # type: ignore[operator]
+    newest = method(session, "second")  # type: ignore[operator]
+
+    assert session.turn_count == len(session.history) == 2
+    assert session.history[-1] is newest
+
+
+def test_structured_session_result_invalid_question_is_transactional(
+) -> None:
+    method = _require_structured_session_result_method()
+    session, client = _new_session([_response("kept")])
+    session.ask("kept")
+    before = session.history
+    requests = len(client.chat.completions.calls)
+
+    with pytest.raises(ValueError):
+        method(session, " \t\r\n")  # type: ignore[operator]
+
+    assert session.history == before
+    assert len(client.chat.completions.calls) == requests
+    assert client.close_calls == 0
+
+
+def test_structured_session_result_failure_at_full_bound_does_not_evict(
+) -> None:
+    method = _require_structured_session_result_method()
+    error = RuntimeError("provider failed")
+    session, client = _new_session(
+        [_response("one"), _response("two"), error],
+        max_turns=2,
+    )
+    session.ask("first")
+    session.ask("second")
+    before = session.history
+
+    with pytest.raises(RuntimeError) as caught:
+        method(session, "failed")  # type: ignore[operator]
+
+    assert caught.value is error
+    assert session.history == before
+    assert session.turn_count == 2
+    assert len(client.chat.completions.calls) == 3
+
+
+def test_structured_session_result_export_schema_unchanged() -> None:
+    method = _require_structured_session_result_method()
+    session, _ = _new_session([_response("answer")])
+
+    turn = method(session, "question")  # type: ignore[operator]
+    exported = session.export_history()
+
+    assert session.history[-1] is turn
+    assert exported == [
+        {
+            "question": "question",
+            "answer": "answer",
+            "tool_call_content": None,
+            "tool_invocations": [],
+        }
+    ]
+    assert set(exported[0]) == {
+        "question",
+        "answer",
+        "tool_call_content",
+        "tool_invocations",
+    }
+
+
+def test_structured_session_result_reset_then_reuse() -> None:
+    method = _require_structured_session_result_method()
+    session, _ = _new_session(
+        [_response("one"), _response("two")]
+    )
+
+    method(session, "first")  # type: ignore[operator]
+    session.reset()
+    assert session.history == ()
+    assert session.turn_count == 0
+    turn = method(session, "second")  # type: ignore[operator]
+
+    assert session.history == (turn,)
+    assert turn.answer == "two"
+
+
+def test_structured_session_result_preserves_configuration_and_options(
+) -> None:
+    method = _require_structured_session_result_method()
+    context = {"experiment_dir": "demo"}
+    session, client = _new_session(
+        [_response("answer")],
+        model="structured-model",
+        experiment_context=context,
+        temperature=0.25,
+    )
+
+    method(session, "question")  # type: ignore[operator]
+
+    request = client.chat.completions.calls[0]
+    assert request["model"] == "structured-model"
+    assert request["temperature"] == 0.25
+    assert "demo" in request["messages"][1]["content"]
+    assert session.experiment_context == context
+
+
+def test_structured_session_result_returns_existing_immutable_safe_type(
+) -> None:
+    from dataclasses import FrozenInstanceError
+
+    method = _require_structured_session_result_method()
+    provider_response = _response("answer")
+    session, client = _new_session([provider_response])
+
+    turn = method(session, "question")  # type: ignore[operator]
+
+    with pytest.raises(FrozenInstanceError):
+        turn.answer = "changed"
+    assert not hasattr(turn, "response")
+    assert provider_response not in tuple(
+        getattr(turn, field)
+        for field in (
+            "question",
+            "answer",
+            "tool_call_content",
+            "tool_invocations",
+        )
+    )
+    assert client not in tuple(
+        getattr(turn, field)
+        for field in (
+            "question",
+            "answer",
+            "tool_call_content",
+            "tool_invocations",
+        )
+    )
+
+
+def test_structured_session_result_does_not_read_credentials_or_import_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    method = _require_structured_session_result_method()
+    forbidden = {"OPENAI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"}
+    original_get = os._Environ.get
+    original_getitem = os._Environ.__getitem__
+
+    def guarded_get(
+        environ: object,
+        key: str,
+        default: object = None,
+    ) -> object:
+        if key in forbidden:
+            raise AssertionError(f"credential read: {key}")
+        return original_get(environ, key, default)
+
+    def guarded_getitem(environ: object, key: str) -> str:
+        if key in forbidden:
+            raise AssertionError(f"credential read: {key}")
+        return original_getitem(environ, key)
+
+    monkeypatch.delitem(sys.modules, "openai", raising=False)
+    monkeypatch.setattr(os._Environ, "get", guarded_get)
+    monkeypatch.setattr(os._Environ, "__getitem__", guarded_getitem)
+    session, _ = _new_session([_response("answer")])
+
+    method(session, "question")  # type: ignore[operator]
+
+    assert "openai" not in sys.modules
+
+
+@pytest.mark.parametrize("invocation_count", [1, 2, 3, 4, 5])
+def test_structured_session_result_tool_count_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    invocation_count: int,
+) -> None:
+    method = _require_structured_session_result_method()
+    calls = _structured_session_result_install_tool_recorder(monkeypatch)
+    session, client = _new_session(
+        _structured_session_result_tool_responses(invocation_count)
+    )
+
+    turn = method(session, "run tools")  # type: ignore[operator]
+
+    assert len(turn.tool_invocations) == invocation_count
+    assert [item.tool_call_id for item in turn.tool_invocations] == [
+        f"structured-call-{position}"
+        for position in range(1, invocation_count + 1)
+    ]
+    assert [item.arguments_json for item in turn.tool_invocations] == [
+        f'{{ "position" : {position} }}'
+        for position in range(1, invocation_count + 1)
+    ]
+    assert [item.result_json for item in turn.tool_invocations] == [
+        f'{{"position":{position}}}'
+        for position in range(1, invocation_count + 1)
+    ]
+    assert len(calls) == invocation_count
+    assert len(client.chat.completions.calls) == 2
+    assert session.history == (turn,)
+    assert session.history[-1] is turn
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "first_provider",
+        "malformed_tool_call",
+        "unknown_tool",
+        "tool_execution",
+        "second_provider",
+    ],
+)
+def test_structured_session_result_failure_transaction_group_one(
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    method = _require_structured_session_result_method()
+    _structured_session_result_assert_failure_transaction(
+        method,
+        monkeypatch,
+        scenario,
+    )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "serialization",
+        "malformed_final_response",
+        "invalid_final_content",
+        "keyboard_interrupt",
+        "system_exit",
+    ],
+)
+def test_structured_session_result_failure_transaction_group_two(
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    method = _require_structured_session_result_method()
+    _structured_session_result_assert_failure_transaction(
+        method,
+        monkeypatch,
+        scenario,
+    )
+
+
+@pytest.mark.parametrize(
+    "guard",
+    ["stdout", "stderr", "logging", "filesystem", "client_close"],
+)
+def test_structured_session_result_side_effect_guards(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    guard: str,
+) -> None:
+    import builtins
+    import logging
+
+    method = _require_structured_session_result_method()
+    session, client = _new_session([_response("answer")])
+    directory_before = tuple(tmp_path.iterdir())
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"forbidden {guard} side effect")
+
+    if guard == "logging":
+        monkeypatch.setattr(logging.Logger, "_log", forbidden)
+    elif guard == "filesystem":
+        monkeypatch.setattr(builtins, "open", forbidden)
+        monkeypatch.setattr(Path, "write_text", forbidden)
+        monkeypatch.setattr(Path, "write_bytes", forbidden)
+        monkeypatch.setattr(Path, "touch", forbidden)
+        monkeypatch.setattr(Path, "mkdir", forbidden)
+
+    turn = method(session, "question")  # type: ignore[operator]
+    captured = capsys.readouterr()
+
+    assert turn.answer == "answer"
+    assert captured.out == ""
+    assert captured.err == ""
+    assert tuple(tmp_path.iterdir()) == directory_before
+    assert client.close_calls == 0
