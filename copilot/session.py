@@ -275,7 +275,7 @@ class CopilotSession:
         messages.append(current_messages[1])
         return messages
 
-    def ask(self, question: str) -> str:
+    def ask_with_result(self, question: str) -> CopilotTurn:
         validated_question = _validate_question(question)
         retained = self._retained_history()
         messages = self._build_turn_messages(
@@ -302,7 +302,10 @@ class CopilotSession:
         self._history = (retained + (new_turn,))[
             -self._max_turns:
         ]
-        return answer
+        return new_turn
+
+    def ask(self, question: str) -> str:
+        return self.ask_with_result(question).answer
 
     def export_history(self) -> list[dict[str, object]]:
         return [
