@@ -2,11 +2,15 @@
 
 from dataclasses import dataclass
 import json
+from typing import Callable
 
 from tool_layer import invoke_tool, list_tools
 
 
 _MISSING = object()
+
+
+_ProgressCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +28,24 @@ def create_tool_call_response(
     **request_options: object,
 ) -> object:
     """Request one model response with the registered tools."""
+    return _create_tool_call_response(
+        client,
+        None,
+        model=model,
+        messages=messages,
+        **request_options,
+    )
+
+
+def _create_tool_call_response(
+    client: object,
+    progress_callback: _ProgressCallback | None,
+    /,
+    *,
+    model: str,
+    messages: list[dict],
+    **request_options: object,
+) -> object:
     if not isinstance(model, str):
         raise TypeError("model must be a string")
     if not model.strip():
@@ -34,12 +56,17 @@ def create_tool_call_response(
         raise TypeError("tools are provided by the tool registry")
 
     tools = list_tools()
-    return client.chat.completions.create(
+    if progress_callback is not None:
+        progress_callback("provider_request_started")
+    response = client.chat.completions.create(
         model=model,
         messages=messages,
         tools=tools,
         **request_options,
     )
+    if progress_callback is not None:
+        progress_callback("provider_response_received")
+    return response
 
 
 def _call_context(
@@ -145,6 +172,14 @@ def execute_tool_calls(
     response: object,
 ) -> list[dict]:
     """Validate and execute all tool calls in one model response."""
+    return _execute_tool_calls(response, None)
+
+
+def _execute_tool_calls(
+    response: object,
+    progress_callback: _ProgressCallback | None,
+    /,
+) -> list[dict]:
     choices = getattr(response, "choices", _MISSING)
     if choices is _MISSING:
         raise TypeError("response.choices is required")
@@ -171,6 +206,8 @@ def execute_tool_calls(
     if not tool_calls:
         return []
 
+    if progress_callback is not None:
+        progress_callback("tool_call_validation")
     validated_calls = [
         _validate_tool_call(tool_call, index)
         for index, tool_call in enumerate(tool_calls)
@@ -178,7 +215,11 @@ def execute_tool_calls(
 
     messages: list[dict] = []
     for tool_call_id, function_name, arguments in validated_calls:
+        if progress_callback is not None:
+            progress_callback("tool_execution")
         result = invoke_tool(function_name, arguments)
+        if progress_callback is not None:
+            progress_callback("tool_result_serialization")
         serialized_result = json.dumps(
             result,
             ensure_ascii=False,
@@ -199,6 +240,8 @@ def execute_tool_calls(
 
 def _build_assistant_tool_call_message(
     response: object,
+    progress_callback: _ProgressCallback | None = None,
+    /,
 ) -> dict | None:
     choices = getattr(response, "choices", _MISSING)
     if choices is _MISSING:
@@ -243,6 +286,8 @@ def _build_assistant_tool_call_message(
     if not tool_calls:
         return None
 
+    if progress_callback is not None:
+        progress_callback("tool_call_validation")
     validated_calls = [
         _validate_tool_call(tool_call, index)
         for index, tool_call in enumerate(tool_calls)
@@ -277,19 +322,23 @@ def _build_assistant_tool_call_message(
 
 def _run_tool_call_cycle_with_trace(
     client: object,
+    progress_callback: _ProgressCallback | None = None,
+    /,
     *,
     model: str,
     messages: list[dict],
     **request_options: object,
 ) -> _ToolCallCycleTrace:
-    first_response = create_tool_call_response(
+    first_response = _create_tool_call_response(
         client,
+        progress_callback,
         model=model,
         messages=messages,
         **request_options,
     )
     assistant_message = _build_assistant_tool_call_message(
-        first_response
+        first_response,
+        progress_callback,
     )
     if assistant_message is None:
         return _ToolCallCycleTrace(
@@ -298,15 +347,18 @@ def _run_tool_call_cycle_with_trace(
             tool_messages=(),
         )
 
-    tool_messages = tuple(execute_tool_calls(first_response))
+    tool_messages = tuple(
+        _execute_tool_calls(first_response, progress_callback)
+    )
     follow_up_messages = [
         *messages,
         assistant_message,
         *tool_messages,
     ]
     return _ToolCallCycleTrace(
-        response=create_tool_call_response(
+        response=_create_tool_call_response(
             client,
+            progress_callback,
             model=model,
             messages=follow_up_messages,
             **request_options,
@@ -326,6 +378,7 @@ def run_tool_call_cycle(
     """Run at most one tool execution step and one follow-up request."""
     return _run_tool_call_cycle_with_trace(
         client,
+        None,
         model=model,
         messages=messages,
         **request_options,
