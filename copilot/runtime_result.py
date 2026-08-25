@@ -1,5 +1,7 @@
 """Structured result for one bounded Copilot turn."""
 
+from typing import Callable
+
 from llm_adapters.openai_tool_adapter import (
     _run_tool_call_cycle_with_trace,
 )
@@ -23,6 +25,26 @@ def run_copilot_turn_with_result(
     **request_options: object,
 ) -> CopilotTurn:
     """Run one bounded Copilot turn and return its structured result."""
+    return _run_copilot_turn_with_result(
+        client,
+        None,
+        model=model,
+        question=question,
+        experiment_context=experiment_context,
+        **request_options,
+    )
+
+
+def _run_copilot_turn_with_result(
+    client: object,
+    progress_callback: Callable[[str], None] | None = None,
+    /,
+    *,
+    model: str,
+    question: str,
+    experiment_context: dict[str, object] | None = None,
+    **request_options: object,
+) -> CopilotTurn:
     validated_question = _validate_question(question)
     validated_context = _validate_context(experiment_context)
     _validate_request_options(request_options)
@@ -32,6 +54,7 @@ def run_copilot_turn_with_result(
     )
     trace = _run_tool_call_cycle_with_trace(
         client,
+        progress_callback,
         model=model,
         messages=messages,
         **request_options,
