@@ -1,5 +1,8 @@
 """Chat Completions-compatible tool calling adapter."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import json
 from typing import Callable
@@ -11,6 +14,22 @@ _MISSING = object()
 
 
 _ProgressCallback = Callable[[str], None]
+_ToolPathPolicy = Callable[[str, dict], dict]
+_TOOL_PATH_POLICY: ContextVar[_ToolPathPolicy | None] = ContextVar(
+    "tool_path_policy",
+    default=None,
+)
+
+
+@contextmanager
+def _experiment_path_policy_scope(
+    policy: _ToolPathPolicy,
+) -> Iterator[None]:
+    token = _TOOL_PATH_POLICY.set(policy)
+    try:
+        yield
+    finally:
+        _TOOL_PATH_POLICY.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +236,13 @@ def _execute_tool_calls(
     for tool_call_id, function_name, arguments in validated_calls:
         if progress_callback is not None:
             progress_callback("tool_execution")
-        result = invoke_tool(function_name, arguments)
+        policy = _TOOL_PATH_POLICY.get()
+        secured_arguments = (
+            arguments
+            if policy is None
+            else policy(function_name, arguments)
+        )
+        result = invoke_tool(function_name, secured_arguments)
         if progress_callback is not None:
             progress_callback("tool_result_serialization")
         serialized_result = json.dumps(

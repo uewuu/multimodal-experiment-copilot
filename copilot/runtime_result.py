@@ -3,7 +3,11 @@
 from typing import Callable
 
 from llm_adapters.openai_tool_adapter import (
+    _experiment_path_policy_scope,
     _run_tool_call_cycle_with_trace,
+)
+from tool_layer.experiment_path_security import (
+    _build_experiment_path_policy,
 )
 
 from .runtime import (
@@ -52,13 +56,15 @@ def _run_copilot_turn_with_result(
         validated_question,
         validated_context,
     )
-    trace = _run_tool_call_cycle_with_trace(
-        client,
-        progress_callback,
-        model=model,
-        messages=messages,
-        **request_options,
-    )
+    path_policy = _build_experiment_path_policy(validated_context)
+    with _experiment_path_policy_scope(path_policy):
+        trace = _run_tool_call_cycle_with_trace(
+            client,
+            progress_callback,
+            model=model,
+            messages=messages,
+            **request_options,
+        )
     answer = _extract_final_content(trace.response)
     tool_call_content, tool_invocations = _normalize_tool_trace(
         trace.assistant_message,

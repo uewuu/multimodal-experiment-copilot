@@ -3,6 +3,12 @@
 import json
 
 from llm_adapters import run_tool_call_cycle
+from llm_adapters.openai_tool_adapter import (
+    _experiment_path_policy_scope,
+)
+from tool_layer.experiment_path_security import (
+    _build_experiment_path_policy,
+)
 
 
 _MISSING = object()
@@ -214,10 +220,12 @@ def run_copilot_turn(
         validated_question,
         validated_context,
     )
-    response = run_tool_call_cycle(
-        client,
-        model=model,
-        messages=messages,
-        **request_options,
-    )
+    path_policy = _build_experiment_path_policy(validated_context)
+    with _experiment_path_policy_scope(path_policy):
+        response = run_tool_call_cycle(
+            client,
+            model=model,
+            messages=messages,
+            **request_options,
+        )
     return _extract_final_content(response)
