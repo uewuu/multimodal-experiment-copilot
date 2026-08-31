@@ -4,7 +4,11 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from llm_adapters.openai_tool_adapter import (
+    _experiment_path_policy_scope,
     _run_tool_call_cycle_with_trace,
+)
+from tool_layer.experiment_path_security import (
+    _build_experiment_path_policy,
 )
 
 from .runtime import (
@@ -282,12 +286,16 @@ class CopilotSession:
             validated_question,
             retained,
         )
-        trace = _run_tool_call_cycle_with_trace(
-            self._client,
-            model=self._model,
-            messages=messages,
-            **deepcopy(self._request_options),
+        path_policy = _build_experiment_path_policy(
+            self._experiment_context
         )
+        with _experiment_path_policy_scope(path_policy):
+            trace = _run_tool_call_cycle_with_trace(
+                self._client,
+                model=self._model,
+                messages=messages,
+                **deepcopy(self._request_options),
+            )
         answer = _extract_final_content(trace.response)
         tool_call_content, tool_invocations = _normalize_tool_trace(
             trace.assistant_message,
