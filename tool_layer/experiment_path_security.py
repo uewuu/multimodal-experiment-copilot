@@ -43,11 +43,15 @@ def _validate_model_path_form(
     if windows_path.drive and not windows_path.root:
         raise _boundary_error()
 
-    if windows_path.drive and trusted_root is not None:
-        trusted_drive = PureWindowsPath(str(trusted_root)).drive
+    if windows_path.drive and windows_path.root:
+        trusted_drive = (
+            None
+            if trusted_root is None
+            else PureWindowsPath(str(trusted_root)).drive
+        )
         if (
-            trusted_drive
-            and windows_path.drive.casefold()
+            not trusted_drive
+            or windows_path.drive.casefold()
             != trusted_drive.casefold()
         ):
             raise _boundary_error()
