@@ -9,6 +9,8 @@ from typing import Callable
 
 from tool_layer import invoke_tool, list_tools
 
+from .tool_result_governance import _validate_tool_result_bytes
+
 
 _MISSING = object()
 
@@ -233,6 +235,7 @@ def _execute_tool_calls(
     ]
 
     messages: list[dict] = []
+    cumulative_result_bytes = 0
     for tool_call_id, function_name, arguments in validated_calls:
         if progress_callback is not None:
             progress_callback("tool_execution")
@@ -251,6 +254,10 @@ def _execute_tool_calls(
             allow_nan=False,
             sort_keys=True,
             separators=(",", ":"),
+        )
+        cumulative_result_bytes = _validate_tool_result_bytes(
+            serialized_result,
+            cumulative_result_bytes,
         )
         messages.append(
             {
