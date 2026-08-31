@@ -4,19 +4,10 @@ import os
 from pathlib import Path, PureWindowsPath
 from typing import Callable
 
+from . import tool_registry
+
 
 _PathPolicy = Callable[[str, dict], dict]
-
-_TOOL_PATH_FIELDS = {
-    "analyze_experiment": (
-        ("experiment_dir", True),
-        ("metrics_config", False),
-    ),
-    "compare_experiments": (
-        ("experiment_root", True),
-        ("metrics_config", False),
-    ),
-}
 
 
 def _boundary_error() -> ValueError:
@@ -100,11 +91,14 @@ def _secure_without_context(
     tool_name: str,
     arguments: dict,
 ) -> dict:
-    fields = _TOOL_PATH_FIELDS.get(tool_name)
-    if fields is None:
+    workspace_paths = tool_registry._workspace_paths_for_tool(
+        tool_name
+    )
+    if not workspace_paths:
         return arguments
 
-    for field, _ in fields:
+    for descriptor in workspace_paths:
+        field = descriptor.parameter_name
         value = arguments.get(field)
         if not isinstance(value, str) or not value.strip():
             continue
@@ -140,8 +134,10 @@ def _build_experiment_path_policy(
         tool_name: str,
         arguments: dict,
     ) -> dict:
-        fields = _TOOL_PATH_FIELDS.get(tool_name)
-        if fields is None:
+        workspace_paths = tool_registry._workspace_paths_for_tool(
+            tool_name
+        )
+        if not workspace_paths:
             return arguments
         if trusted_value is None:
             return _secure_without_context(tool_name, arguments)
@@ -150,7 +146,8 @@ def _build_experiment_path_policy(
             trusted_value
         )
         secured_arguments = dict(arguments)
-        for field, directory_required in fields:
+        for descriptor in workspace_paths:
+            field = descriptor.parameter_name
             value = arguments.get(field)
             if value is None and field == "metrics_config":
                 continue
@@ -161,7 +158,9 @@ def _build_experiment_path_policy(
                     value,
                     trusted_input=trusted_input,
                     trusted_root=trusted_root,
-                    directory_required=directory_required,
+                    directory_required=(
+                        descriptor.path_kind == "directory"
+                    ),
                 )
             )
         return secured_arguments
