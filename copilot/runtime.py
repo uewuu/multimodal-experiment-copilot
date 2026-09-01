@@ -6,6 +6,11 @@ from llm_adapters import run_tool_call_cycle
 from llm_adapters.openai_tool_adapter import (
     _experiment_path_policy_scope,
 )
+from llm_adapters.turn_deadline import (
+    _check_turn_deadline,
+    _turn_deadline_scope,
+    _validate_turn_deadline_options,
+)
 from tool_layer.experiment_path_security import (
     _build_experiment_path_policy,
 )
@@ -210,22 +215,30 @@ def run_copilot_turn(
     model: str,
     question: str,
     experiment_context: dict[str, object] | None = None,
+    turn_timeout_seconds: float | None = None,
     **request_options: object,
 ) -> str:
     """Run one bounded Copilot turn and return assistant text."""
     validated_question = _validate_question(question)
     validated_context = _validate_context(experiment_context)
     _validate_request_options(request_options)
+    validated_timeout = _validate_turn_deadline_options(
+        turn_timeout_seconds,
+        request_options,
+    )
     messages = _build_messages(
         validated_question,
         validated_context,
     )
     path_policy = _build_experiment_path_policy(validated_context)
-    with _experiment_path_policy_scope(path_policy):
-        response = run_tool_call_cycle(
-            client,
-            model=model,
-            messages=messages,
-            **request_options,
-        )
-    return _extract_final_content(response)
+    with _turn_deadline_scope(validated_timeout):
+        with _experiment_path_policy_scope(path_policy):
+            response = run_tool_call_cycle(
+                client,
+                model=model,
+                messages=messages,
+                **request_options,
+            )
+        answer = _extract_final_content(response)
+        _check_turn_deadline()
+        return answer

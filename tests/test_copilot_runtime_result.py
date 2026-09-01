@@ -163,15 +163,17 @@ def test_public_function_has_exact_signature_and_return_type() -> None:
         "model",
         "question",
         "experiment_context",
+        "turn_timeout_seconds",
         "request_options",
     ]
     assert parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert all(
         parameter.kind is inspect.Parameter.KEYWORD_ONLY
-        for parameter in parameters[1:4]
+        for parameter in parameters[1:5]
     )
     assert parameters[3].default is None
-    assert parameters[4].kind is inspect.Parameter.VAR_KEYWORD
+    assert parameters[4].default is None
+    assert parameters[5].kind is inspect.Parameter.VAR_KEYWORD
     assert signature.return_annotation is session.CopilotTurn
 
 

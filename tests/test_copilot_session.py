@@ -260,13 +260,20 @@ def test_session_constructor_has_exact_signature() -> None:
         "model",
         "experiment_context",
         "max_turns",
+        "turn_timeout_seconds",
         "request_options",
     ]
     assert parameters["client"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-    for name in ("model", "experiment_context", "max_turns"):
+    for name in (
+        "model",
+        "experiment_context",
+        "max_turns",
+        "turn_timeout_seconds",
+    ):
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters["experiment_context"].default is None
     assert parameters["max_turns"].default == 8
+    assert parameters["turn_timeout_seconds"].default is None
     assert parameters["request_options"].kind is inspect.Parameter.VAR_KEYWORD
 
 

@@ -7,6 +7,11 @@ from llm_adapters.openai_tool_adapter import (
     _experiment_path_policy_scope,
     _run_tool_call_cycle_with_trace,
 )
+from llm_adapters.turn_deadline import (
+    _check_turn_deadline,
+    _turn_deadline_scope,
+    _validate_turn_deadline_options,
+)
 from tool_layer.experiment_path_security import (
     _build_experiment_path_policy,
 )
@@ -183,17 +188,23 @@ class CopilotSession:
         model: str,
         experiment_context: dict[str, object] | None = None,
         max_turns: int = 8,
+        turn_timeout_seconds: float | None = None,
         **request_options: object,
     ) -> None:
         validated_model = _validate_model(model)
         validated_context = _validate_context(experiment_context)
         validated_max_turns = _validate_max_turns(max_turns)
         _validate_session_request_options(request_options)
+        validated_timeout = _validate_turn_deadline_options(
+            turn_timeout_seconds,
+            request_options,
+        )
 
         self._client = client
         self._model = validated_model
         self._experiment_context = deepcopy(validated_context)
         self._max_turns = validated_max_turns
+        self._turn_timeout_seconds = validated_timeout
         self._request_options = deepcopy(request_options)
         self._history: tuple[CopilotTurn, ...] = ()
 
@@ -289,28 +300,30 @@ class CopilotSession:
         path_policy = _build_experiment_path_policy(
             self._experiment_context
         )
-        with _experiment_path_policy_scope(path_policy):
-            trace = _run_tool_call_cycle_with_trace(
-                self._client,
-                model=self._model,
-                messages=messages,
-                **deepcopy(self._request_options),
+        with _turn_deadline_scope(self._turn_timeout_seconds):
+            with _experiment_path_policy_scope(path_policy):
+                trace = _run_tool_call_cycle_with_trace(
+                    self._client,
+                    model=self._model,
+                    messages=messages,
+                    **deepcopy(self._request_options),
+                )
+            answer = _extract_final_content(trace.response)
+            tool_call_content, tool_invocations = _normalize_tool_trace(
+                trace.assistant_message,
+                trace.tool_messages,
             )
-        answer = _extract_final_content(trace.response)
-        tool_call_content, tool_invocations = _normalize_tool_trace(
-            trace.assistant_message,
-            trace.tool_messages,
-        )
-        new_turn = CopilotTurn(
-            question=validated_question,
-            answer=answer,
-            tool_call_content=tool_call_content,
-            tool_invocations=tool_invocations,
-        )
-        self._history = (retained + (new_turn,))[
-            -self._max_turns:
-        ]
-        return new_turn
+            new_turn = CopilotTurn(
+                question=validated_question,
+                answer=answer,
+                tool_call_content=tool_call_content,
+                tool_invocations=tool_invocations,
+            )
+            _check_turn_deadline()
+            self._history = (retained + (new_turn,))[
+                -self._max_turns:
+            ]
+            return new_turn
 
     def ask(self, question: str) -> str:
         return self.ask_with_result(question).answer

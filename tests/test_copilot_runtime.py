@@ -182,6 +182,7 @@ def test_run_copilot_turn_has_exact_public_signature() -> None:
     assert str(signature) == (
         "(client: object, *, model: str, question: str, "
         "experiment_context: dict[str, object] | None = None, "
+        "turn_timeout_seconds: float | None = None, "
         "**request_options: object) -> str"
     )
 

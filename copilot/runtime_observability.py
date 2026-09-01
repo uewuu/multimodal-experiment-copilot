@@ -37,6 +37,7 @@ def run_copilot_turn_with_observability(
     model: str,
     question: str,
     experiment_context: dict[str, object] | None = None,
+    turn_timeout_seconds: float | None = None,
     **request_options: object,
 ) -> CopilotObservedResult:
     """Run one bounded Copilot turn and report minimal success metrics."""
@@ -46,6 +47,7 @@ def run_copilot_turn_with_observability(
         model=model,
         question=question,
         experiment_context=experiment_context,
+        turn_timeout_seconds=turn_timeout_seconds,
         **request_options,
     )
     finish = _perf_counter()
