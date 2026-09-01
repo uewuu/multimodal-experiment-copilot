@@ -11,6 +11,7 @@ from .runtime_observability import (
     run_copilot_turn_with_observability,
 )
 from .runtime_result import run_copilot_turn_with_result
+from .service import CopilotService
 from .session import CopilotSession, CopilotToolInvocation, CopilotTurn
 
 
@@ -18,6 +19,7 @@ __all__ = [
     "CopilotFailureObservation",
     "CopilotObservedResult",
     "CopilotRuntimeMetrics",
+    "CopilotService",
     "CopilotSession",
     "CopilotToolInvocation",
     "CopilotTurn",
