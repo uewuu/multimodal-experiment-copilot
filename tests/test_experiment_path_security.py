@@ -227,11 +227,13 @@ def test_public_tool_and_runtime_signatures_remain_unchanged() -> None:
     assert str(inspect.signature(copilot.run_copilot_turn)) == (
         "(client: object, *, model: str, question: str, "
         "experiment_context: dict[str, object] | None = None, "
+        "turn_timeout_seconds: float | None = None, "
         "**request_options: object) -> str"
     )
     assert str(inspect.signature(CopilotSession)) == (
         "(client: object, *, model: str, experiment_context: "
         "dict[str, object] | None = None, max_turns: int = 8, "
+        "turn_timeout_seconds: float | None = None, "
         "**request_options: object) -> None"
     )
 

@@ -60,6 +60,7 @@ def run_copilot_turn_with_failure_observability(
     model: str,
     question: str,
     experiment_context: dict[str, object] | None = None,
+    turn_timeout_seconds: float | None = None,
     on_failure: Callable[[CopilotFailureObservation], None],
     **request_options: object,
 ) -> CopilotObservedResult:
@@ -76,6 +77,7 @@ def run_copilot_turn_with_failure_observability(
             model=model,
             question=question,
             experiment_context=experiment_context,
+            turn_timeout_seconds=turn_timeout_seconds,
             **request_options,
         )
     except BaseException:

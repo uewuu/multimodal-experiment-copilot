@@ -181,6 +181,7 @@ def test_observed_runtime_has_exact_signature_and_return_type() -> None:
         "model",
         "question",
         "experiment_context",
+        "turn_timeout_seconds",
         "request_options",
     ]
     assert parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
@@ -188,13 +189,16 @@ def test_observed_runtime_has_exact_signature_and_return_type() -> None:
     assert parameters[2].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters[3].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters[3].default is None
-    assert parameters[4].kind is inspect.Parameter.VAR_KEYWORD
+    assert parameters[4].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters[4].default is None
+    assert parameters[5].kind is inspect.Parameter.VAR_KEYWORD
     hints = get_type_hints(function)
     assert hints == {
         "client": object,
         "model": str,
         "question": str,
         "experiment_context": dict[str, object] | None,
+        "turn_timeout_seconds": float | None,
         "request_options": object,
         "return": module.CopilotObservedResult,
     }

@@ -174,6 +174,7 @@ def test_failure_runtime_has_exact_signature() -> None:
         "model",
         "question",
         "experiment_context",
+        "turn_timeout_seconds",
         "on_failure",
         "request_options",
     ]
@@ -183,16 +184,19 @@ def test_failure_runtime_has_exact_signature() -> None:
         inspect.Parameter.KEYWORD_ONLY,
         inspect.Parameter.KEYWORD_ONLY,
         inspect.Parameter.KEYWORD_ONLY,
+        inspect.Parameter.KEYWORD_ONLY,
         inspect.Parameter.VAR_KEYWORD,
     ]
     assert parameters[3].default is None
-    assert parameters[4].default is inspect.Parameter.empty
+    assert parameters[4].default is None
+    assert parameters[5].default is inspect.Parameter.empty
     module = _module()
     assert get_type_hints(function) == {
         "client": object,
         "model": str,
         "question": str,
         "experiment_context": dict[str, object] | None,
+        "turn_timeout_seconds": float | None,
         "on_failure": Callable[[module.CopilotFailureObservation], None],
         "request_options": object,
         "return": CopilotObservedResult,

@@ -10,6 +10,10 @@ from typing import Callable
 from tool_layer import invoke_tool, list_tools
 
 from .tool_result_governance import _validate_tool_result_bytes
+from .turn_deadline import (
+    _check_turn_deadline,
+    _remaining_turn_seconds,
+)
 
 
 _MISSING = object()
@@ -77,16 +81,24 @@ def _create_tool_call_response(
         raise TypeError("tools are provided by the tool registry")
 
     tools = list_tools()
+    remaining = _remaining_turn_seconds()
+    provider_options = request_options
+    if remaining is not None:
+        provider_options = {
+            **request_options,
+            "timeout": remaining,
+        }
     if progress_callback is not None:
         progress_callback("provider_request_started")
     response = client.chat.completions.create(
         model=model,
         messages=messages,
         tools=tools,
-        **request_options,
+        **provider_options,
     )
     if progress_callback is not None:
         progress_callback("provider_response_received")
+    _check_turn_deadline()
     return response
 
 
@@ -237,6 +249,7 @@ def _execute_tool_calls(
     messages: list[dict] = []
     cumulative_result_bytes = 0
     for tool_call_id, function_name, arguments in validated_calls:
+        _check_turn_deadline()
         if progress_callback is not None:
             progress_callback("tool_execution")
         policy = _TOOL_PATH_POLICY.get()
@@ -246,6 +259,7 @@ def _execute_tool_calls(
             else policy(function_name, arguments)
         )
         result = invoke_tool(function_name, secured_arguments)
+        _check_turn_deadline()
         if progress_callback is not None:
             progress_callback("tool_result_serialization")
         serialized_result = json.dumps(
@@ -259,6 +273,7 @@ def _execute_tool_calls(
             serialized_result,
             cumulative_result_bytes,
         )
+        _check_turn_deadline()
         messages.append(
             {
                 "role": "tool",
