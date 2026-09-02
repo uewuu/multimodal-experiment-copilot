@@ -13,6 +13,7 @@ from .runtime_observability import (
 from .runtime_result import run_copilot_turn_with_result
 from .service import CopilotService
 from .session import CopilotSession, CopilotToolInvocation, CopilotTurn
+from .session_repository import CopilotSessionRepository
 
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "CopilotRuntimeMetrics",
     "CopilotService",
     "CopilotSession",
+    "CopilotSessionRepository",
     "CopilotToolInvocation",
     "CopilotTurn",
     "run_copilot_turn",
