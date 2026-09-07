@@ -1,781 +1,391 @@
 # Multimodal Experiment Copilot
 
-A lightweight experiment analysis tool for reading multimodal machine learning
-configurations and training histories, extracting key validation metrics, and
-generating structured JSON summaries and Markdown reports.
+**A general-purpose experiment analysis and decision Copilot for machine-learning engineering teams.**
 
-中文名称：多模态实验分析智能体。
+Multimodal Experiment Copilot turns experiment configurations and metric histories into reproducible comparisons, diagnostics, recommendations, and grounded Copilot answers. Deterministic Python code owns the analysis; an optional language model can select approved tools and explain their results.
 
-项目定位：面向机器学习研发团队的通用实验分析与决策 Copilot。
+It is not a generic ChatGPT wrapper, and it is not limited to one dataset or task. The included FI personality-recognition fixture is a real-world case study, while the analysis and orchestration layers are designed for general ML experiments.
 
-## Overview
+## Why this project is different
 
-Multimodal machine learning experiments often produce configuration files,
-training histories, validation metrics, and multiple output artifacts.
+- **Deterministic analysis first.** YAML/JSON parsing, metric evaluation, ranking, diagnostics, and recommendations do not depend on an LLM.
+- **Grounded model orchestration.** A model can call only registered tools with explicit JSON Schemas; it does not reimplement experiment analysis in prose.
+- **Bounded execution.** Provider requests, tool cycles, session history, tool-result size, and turn time are constrained.
+- **Host-controlled capabilities.** The host defines the trusted experiment workspace and runtime policy. Model-generated paths cannot expand that authority.
+- **Multiple interfaces, one core.** Pure Python tools, one-shot and interactive CLIs, a thin service facade, and an injected FastAPI adapter reuse the same runtime.
+- **SDK-free core.** Provider integration is optional and isolated behind a client/adapter boundary.
 
-This project provides a reproducible workflow for:
+## Current capabilities
 
-1. Reading experiment configurations from YAML.
-2. Reading training histories from JSON.
-3. Extracting validation R² and RACC metrics.
-4. Identifying the best value and corresponding epoch.
-5. Building a structured experiment summary.
-6. Exporting JSON and Markdown reports.
-7. Running the workflow through a command-line interface.
+- Read `hparams.yaml` configurations and `history.json` metric histories.
+- Evaluate built-in or YAML-configured metrics with maximize/minimize semantics.
+- Analyze one experiment or compare and rank multiple experiments.
+- Produce JSON-native summaries, Markdown reports, diagnostics, and recommendations.
+- Continue multi-experiment analysis when an individual experiment fails.
+- Expose `analyze_experiment` and `compare_experiments` through a vendor-neutral Tool Registry and JSON Schemas.
+- Execute bounded single-cycle and multi-turn tool-calling flows.
+- Enforce workspace path capabilities for experiment directories and metric configuration files.
+- Limit serialized tool results to 256 KiB each and 512 KiB per tool cycle; results are rejected rather than truncated or summarized.
+- Apply provider timeouts and Copilot turn-deadline checkpoints.
+- Report payload-free failure observations while preserving the original exception.
+- Maintain bounded in-memory sessions with JSON-safe transcript export.
+- Manage process-local sessions through `CopilotSessionRepository`.
+- Offer a borrowed-client `CopilotService` facade.
+- Embed the system through an injected, serialized FastAPI adapter.
 
-The project is being developed incrementally as a portfolio project for
-AI Agent, LLM application, RAG, and AI backend engineering roles.
+## Architecture
 
-## Current Features
+```mermaid
+flowchart TD
+    subgraph Interfaces
+        Demo[Deterministic demo]
+        OneShot[One-shot CLI]
+        Interactive[Interactive CLI]
+        HTTP[Injected FastAPI adapter]
+    end
 
-- Read `hparams.yaml` experiment configurations.
-- Read `history.json` training histories.
-- Validate metric records in `[epoch, value]` format.
-- Analyze validation R² and RACC.
-- Calculate:
-  - record count;
-  - first epoch and value;
-  - last epoch and value;
-  - best epoch and value.
-- Build a structured experiment summary.
-- Generate:
-  - `experiment_summary.json`;
-  - `experiment_report.md`.
-- Support custom experiment and output directories.
-- Provide friendly errors when required files are missing.
-- Provide a command-line help interface with `argparse`.
-- Discover valid experiment directories under a shared root directory.
-- Analyze multiple experiments in one run.
-- Isolate per-experiment failures without interrupting the full batch.
-- Build normalized comparison records.
-- Sort comparison results by best R² or best RACC.
-- Export UTF-8 JSON comparison results.
-- Generate a human-readable multi-experiment Markdown report.
-- Provide a configurable multi-experiment comparison CLI.
-- Define general experiment metrics in an independent YAML file.
-- Select per-experiment best values with `maximize` or `minimize` semantics.
-- Generate dynamic JSON and Markdown comparisons for configured metrics.
-- Generate opt-in deterministic rule diagnostics for metric histories.
-- Generate opt-in deterministic recommendations from diagnostic codes.
-- Include diagnostics and recommendations in single-experiment and
-  multi-experiment JSON/Markdown reports.
-- Preserve legacy output schemas when diagnostics are not enabled.
-- Cover the comparison workflow with automated pytest tests.
-- Validate the full pytest suite automatically with GitHub Actions.
-- Run CI with Python 3.11 on `ubuntu-latest`.
-- Run automatic checks for pull requests targeting `main` and pushes to
-  `main`.
+    subgraph Application
+        Service[CopilotService]
+        Repository[CopilotSessionRepository]
+        Runtime[Bounded Runtime]
+        Session[Bounded CopilotSession]
+        Obs[Deadline and observability]
+    end
 
-## Project Structure
+    subgraph Orchestration
+        Adapter[Provider tool-calling adapter]
+        Governance[Tool-result governance]
+        Security[Workspace path security]
+        Registry[Tool Registry and JSON Schemas]
+    end
+
+    subgraph Deterministic_Core[Deterministic analysis core]
+        Tools[Experiment tools]
+        Metrics[Metrics and comparison]
+        Decisions[Diagnostics and recommendations]
+        Reports[JSON and Markdown reports]
+    end
+
+    Demo --> Service
+    OneShot --> Runtime
+    Interactive --> Session
+    HTTP --> Service
+    HTTP --> Repository
+    Service --> Runtime
+    Service --> Session
+    Repository --> Session
+    Runtime --> Obs
+    Session --> Obs
+    Obs --> Adapter
+    Adapter --> Governance
+    Adapter --> Security
+    Adapter --> Registry
+    Security --> Registry
+    Registry --> Tools
+    Tools --> Metrics
+    Metrics --> Decisions
+    Metrics --> Reports
+```
+
+The adapter translates provider tool calls into Registry dispatch. The Registry exposes copied provider schemas and immutable path-capability descriptors, while the deterministic core remains callable without any provider.
+
+## Quick start: credential-free deterministic demo
+
+Python 3.11 is the supported baseline.
+
+```bash
+python -m pip install -r requirements.txt
+python examples/deterministic_copilot_demo.py
+```
+
+The demo:
+
+- requires no API key and performs no network access;
+- creates two small synthetic experiments in temporary storage;
+- uses a deterministic fake provider compatible with the real adapter;
+- traverses `CopilotService → Runtime → Adapter → Path Security → Tool Registry`;
+- invokes the real `compare_experiments` tool with diagnostics enabled;
+- prints stable, recursively JSON-native output.
+
+See the checked-in representative result at [`examples/deterministic_copilot_demo_output.json`](examples/deterministic_copilot_demo_output.json).
+
+## Installation
+
+Install the project, analysis, HTTP, and test dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+The optional OpenAI-compatible provider client is deliberately separate:
+
+```bash
+python -m pip install -r requirements-openai.txt
+```
+
+Set `OPENAI_API_KEY` only when using a real provider. The deterministic core and demo do not read it.
+
+PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY = "<your-api-key>"
+```
+
+Bash:
+
+```bash
+export OPENAI_API_KEY="<your-api-key>"
+```
+
+## Copilot interfaces
+
+### One-shot CLI
+
+Ask one question about an experiment directory:
+
+```bash
+python -m copilot \
+  --model "<model>" \
+  --question "Summarize the strongest validation result and any risks." \
+  --experiment-dir examples/demo_experiment
+```
+
+Supported optional flags are `--experiment-dir`, `--base-url`, and `--timeout`. The CLI constructs and closes its provider client, runs one bounded Copilot turn, and prints the answer.
+
+### Interactive CLI
+
+Start a bounded in-memory conversation:
+
+```bash
+python -m copilot.interactive \
+  --model "<model>" \
+  --experiment-dir examples/demo_experiment \
+  --max-turns 8
+```
+
+Supported commands are:
+
+- `/help` — show available commands;
+- `/reset` — clear retained session history;
+- `/exit` or `/quit` — end the session.
+
+The interactive entry point also supports `--base-url` and `--timeout`. Session history is process-local and bounded by `--max-turns`.
+
+### Python Tool Layer
+
+The deterministic tools and Registry can be used directly:
+
+```python
+from tool_layer import (
+    analyze_experiment,
+    compare_experiments,
+    invoke_tool,
+    list_tools,
+)
+
+single = analyze_experiment(
+    "examples/demo_experiment",
+    include_diagnostics=True,
+)
+
+comparison = invoke_tool(
+    "compare_experiments",
+    {
+        "experiment_root": "examples",
+        "include_diagnostics": True,
+    },
+)
+
+schemas = list_tools()
+```
+
+`list_tools()` returns isolated, JSON-safe provider schemas. `invoke_tool()` returns the original tool result and preserves underlying exceptions.
+
+## Deterministic report workflows
+
+The original report commands remain useful when no provider is needed.
+
+Single experiment:
+
+```bash
+python generate_report.py \
+  --experiment-dir examples/demo_experiment \
+  --output-dir outputs/demo_experiment \
+  --include-diagnostics
+```
+
+Multi-experiment comparison:
+
+```bash
+python compare_experiments.py \
+  --experiment-root examples \
+  --output-path outputs/comparison.json \
+  --markdown-output-path outputs/comparison.md \
+  --sort-by best_r2 \
+  --include-diagnostics
+```
+
+Each direct child of `--experiment-root` is treated as an experiment only when it contains both `hparams.yaml` and `history.json`. Discovery is not recursive.
+
+### Configurable metrics
+
+Metric definitions live in an independent YAML file. Each `path` must match the actual nested path in every relevant `history.json`.
+
+For the bundled FI fixture, save the following as `metrics.fi-demo.yaml` in the repository root:
+
+```yaml
+metrics:
+  - name: r2
+    path: [valid, app, r2]
+    direction: maximize
+    display_name: R2
+    precision: 4
+
+  - name: racc
+    path: [valid, app, racc]
+    direction: maximize
+    display_name: RACC
+    precision: 4
+```
+
+Then run:
+
+```bash
+python compare_experiments.py \
+  --experiment-root examples \
+  --metrics-config metrics.fi-demo.yaml \
+  --sort-by racc \
+  --output-path outputs/dynamic-comparison.json \
+  --markdown-output-path outputs/dynamic-comparison.md \
+  --include-diagnostics
+```
+
+The reusable schema example at [`configs/metrics.example.yaml`](configs/metrics.example.yaml) demonstrates generic `validation.metrics.*` paths. It is not intended for the bundled FI history, whose metric paths are `valid.app.*`.
+
+`direction` selects the best value within each experiment. Cross-experiment order remains explicit: omit `--ascending` for descending order or add it for ascending order.
+
+## Injected FastAPI adapter
+
+`copilot.http_api.create_app` is an embeddable transport adapter, not a turnkey public server. Host code owns the provider client, constructs the service and repository, and supplies trusted policy:
+
+```python
+from copilot import CopilotService, CopilotSessionRepository
+from copilot.http_api import create_app
+from llm_clients import create_openai_client
+
+client = create_openai_client(timeout=30.0)
+service = CopilotService(client, model="<model>")
+sessions = CopilotSessionRepository(service, max_sessions=100)
+
+app = create_app(
+    service,
+    sessions,
+    experiment_context={"experiment_root": "/srv/experiments"},
+    max_turns=8,
+    turn_timeout_seconds=30.0,
+)
+```
+
+The host is responsible for closing the borrowed provider client and for choosing an ASGI deployment strategy. The adapter exposes exactly five routes:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/copilot/turns` | Run one observed Copilot turn |
+| `POST` | `/v1/sessions` | Create a bounded session |
+| `POST` | `/v1/sessions/{session_id}/turns` | Run a session turn |
+| `DELETE` | `/v1/sessions/{session_id}` | Delete a session |
+| `GET` | `/health` | Return process health |
+
+Business operations share one application-scoped serialization lock; `/health` bypasses that lock. Errors are mapped to intentionally limited HTTP messages, and structured results are serialized explicitly.
+
+Current HTTP deployment contract:
+
+- single process and single worker;
+- process-local, in-memory sessions;
+- no built-in authentication, CORS policy, persistence, or Uvicorn launcher;
+- no provider-client construction or ownership inside the adapter.
+
+Deploying it beyond a trusted environment requires a host application to supply those missing controls.
+
+## Security and execution boundaries
+
+The **host**, not the model or HTTP caller, defines the trusted experiment workspace and server policy.
+
+- Tool path parameters are resolved against host-provided `experiment_context` capabilities.
+- Traversal, absolute paths outside the workspace, cross-drive paths, UNC/special Windows paths, and symlink/junction escapes are rejected.
+- `metrics_config` is governed by the same workspace boundary as experiment paths.
+- HTTP request bodies accept only the approved question payload. Callers cannot redefine the workspace, tools, model/provider configuration, request options, turn timeout, maximum session history, or repository capacity.
+- Provider tool calls are structurally validated before execution.
+- Tool results exceeding 256 KiB individually or 512 KiB per cycle are rejected before another provider request.
+- Provider timeouts and turn-deadline checkpoints bound cooperative work; this is not pre-emptive thread or process cancellation.
+- Failure observations contain stage, counts, and elapsed time—not prompts, credentials, tool arguments, or tool results—and never replace the original exception.
+- The Registry and core runtime do not import a provider SDK, read credentials, or perform network calls at import time.
+
+## Experiment inputs and outputs
+
+An experiment directory contains:
 
 ```text
-multimodal-experiment-copilot/
-├── .github/
-│   └── workflows/
-│       └── tests.yml
-├── configs/
-│   └── metrics.example.yaml
-├── examples/
-│   └── demo_experiment/
-│       ├── history.json
-│       └── hparams.yaml
-├── notes/
-│   └── day01.md
-├── outputs/
-│   ├── comparison.json
-│   └── comparison.md
-├── tests/
-│   ├── test_compare_experiments.py
-│   ├── test_diagnostics.py
-│   ├── test_generate_report.py
-│   └── test_summarize_experiment.py
-├── .gitignore
-├── README.md
-├── compare_experiments.py
-├── diagnostics.py
-├── generate_report.py
-├── metrics.py
-├── read_config.py
-├── read_history.py
-├── read_metrics_config.py
-├── requirements.txt
-└── summarize_experiment.py
+experiment-name/
+├── hparams.yaml
+└── history.json
 ```
 
-The `outputs/` directory is ignored by Git because it contains automatically
-generated files.
+Metric history values use `[epoch, value]` records at paths selected by a built-in or configured metric specification.
 
-## Requirements
+Available structured outputs include:
 
-- Python 3.11 or later
-- PyYAML
-- pytest for development and testing
+- single-experiment configuration and metric summaries;
+- ranked comparison records and isolated failures;
+- deterministic facts, diagnostics, and recommendations;
+- Copilot turns with tool invocation records;
+- provider/tool counts and elapsed-time observations;
+- JSON-safe bounded-session transcript exports;
+- JSON and Markdown report files for direct report workflows.
 
-Runtime dependency:
+Generated files under `outputs/` are ignored by Git.
 
-```bash
-pip install pyyaml
+## FI case study
+
+[`examples/demo_experiment`](examples/demo_experiment) is a sanitized multimodal personality-recognition experiment fixture. It demonstrates a realistic configuration and histories for R2, RACC, and individual trait metrics.
+
+FI is an example workload, not a product specialization. The repository does not include datasets, model checkpoints, credentials, or licensing-sensitive assets. The credential-free deterministic demo uses separate generic synthetic experiments.
+
+## Testing and status
+
+The current verified baseline is:
+
+```text
+2026 passed
 ```
 
-Test dependency:
-
-```bash
-pip install pytest
-```
-
-## Continuous Integration
-
-The `Tests` GitHub Actions workflow automatically validates the project when:
-
-- a pull request targets `main`;
-- a commit is pushed to `main`.
-
-The workflow runs on `ubuntu-latest` with Python 3.11, installs dependencies
-from `requirements.txt`, and executes the complete test suite with:
+Run the complete suite with:
 
 ```bash
 python -m pytest ./tests -q
 ```
 
-The GitHub-hosted workflow has been verified successfully for the current
-version, including a passing pull request check.
-
-## Usage
-
-### 1. Display CLI help
-
-```bash
-python generate_report.py --help
-```
-
-### 2. Run with default paths
-
-```bash
-python generate_report.py
-```
-
-启用确定性规则诊断与建议：
-
-```bash
-python generate_report.py --include-diagnostics
-```
-
-不提供 `--include-diagnostics` 时，原有 JSON、Markdown 和 CLI 行为保持不变。
-
-Default experiment directory:
-
-```text
-examples/demo_experiment
-```
-
-Default output directory:
-
-```text
-outputs
-```
-
-### 3. Specify experiment and output directories
-
-```bash
-python generate_report.py --experiment-dir examples/demo_experiment --output-dir outputs/demo_experiment
-```
-
-The experiment directory must contain:
-
-```text
-hparams.yaml
-history.json
-```
-
-## Multi-experiment Comparison / 多实验比较
-
-### 实验目录要求
-
-实验根目录的直接子目录只有同时包含以下文件时才会被识别：
-
-- `hparams.yaml`
-- `history.json`
-
-例如：
-
-```text
-examples/
-├── experiment_a/
-│   ├── hparams.yaml
-│   └── history.json
-└── experiment_b/
-    ├── hparams.yaml
-    └── history.json
-```
-
-当前只扫描实验根目录的直接子目录，不递归扫描更深层目录。
-
-### 默认运行命令
-
-```bash
-python compare_experiments.py
-```
-
-默认值：
-
-- 实验根目录：`examples`
-- JSON 输出：`outputs/comparison.json`
-- Markdown 输出：`outputs/comparison.md`
-- 排序字段：`best_r2`
-- 排序方向：降序
-
-### 自定义运行示例
-
-PowerShell：
-
-```powershell
-python compare_experiments.py `
-  --experiment-root examples `
-  --output-path outputs/custom_comparison.json `
-  --markdown-output-path outputs/custom_comparison.md `
-  --sort-by best_racc `
-  --ascending
-```
-
-### 参数说明
-
-- `--experiment-root`：包含多个实验目录的根目录。
-- `--output-path`：JSON 输出文件路径。
-- `--markdown-output-path`：Markdown 对比报告输出路径。
-- `--metrics-config`：独立指标 YAML 配置文件路径；提供时启用动态指标模式。
-- `--sort-by`：默认模式使用 `best_r2` 或 `best_racc`；动态模式使用配置中的指标 `name`。
-- `--ascending`：出现时使用升序；未出现时使用降序。
-- `--include-diagnostics`：在 JSON 和 Markdown 中加入规则诊断与确定性建议；
-  未提供时保持原有输出结构。
-
-### JSON 输出结构
-
-```json
-{
-  "sort_by": "best_r2",
-  "descending": true,
-  "experiment_counts": {
-    "total": 2,
-    "successful": 1,
-    "failed": 1
-  },
-  "comparison_records": [
-    {
-      "experiment_name": "experiment_a",
-      "experiment_dir": "examples/experiment_a",
-      "best_r2": 0.72,
-      "best_r2_epoch": 18,
-      "best_racc": 0.94,
-      "best_racc_epoch": 20
-    }
-  ],
-  "failed_experiments": [
-    {
-      "experiment_name": "experiment_b",
-      "experiment_dir": "examples/experiment_b",
-      "error_type": "ValueError",
-      "error_message": "history.json 数据结构无效"
-    }
-  ]
-}
-```
-
-### Markdown 报告内容
-
-多实验 Markdown 报告是 JSON 对比结果的人类可读版本，至少包含：
-
-- `Overview`；
-- 排序字段和排序方向；
-- 实验总数、成功数和失败数；
-- `Ranked Experiments` 排名表格；
-- 每个成功实验的 Best R²、对应 epoch、Best RACC 和对应 epoch；
-- 存在失败实验时的 `Failed Experiments` 章节。
-
-### 错误隔离行为
-
-- 单个实验分析失败时不会中断其他实验。
-- 失败实验会记录在 `failed_experiments` 中。
-- 实验根目录不存在或根路径不是目录时，程序会退出并显示错误。
-
-### 测试
-
-```powershell
-python -m pytest .\tests -v
-```
-
-当前版本已使用上述命令完成本地测试验证。
-
-## Configurable Metrics / 可配置指标
-
-多实验比较支持显式加载通用指标定义。提供 `--metrics-config` 时，程序会从
-独立 YAML 文件读取指标，并为每个实验生成动态 JSON 记录和 Markdown 列；未提供
-该参数时，程序继续使用原有 R²/RACC 兼容模式。
-
-示例配置位于 [`configs/metrics.example.yaml`](configs/metrics.example.yaml)。
-
-### 默认兼容模式
-
-未提供 `--metrics-config` 时，默认比较字段仍为 `best_r2` 和 `best_racc`。
-默认排序为 `sort_by=best_r2`、`descending=True`，动态模式不会替代此行为。
-
-PowerShell：
-
-```powershell
-& "C:\Users\admin\.conda\envs\agent311\python.exe" `
-  .\compare_experiments.py `
-  --experiment-root .\examples `
-  --output-path .\outputs\comparison.json `
-  --markdown-output-path .\outputs\comparison.md `
-  --sort-by best_r2
-```
-
-也可以省略 `--sort-by`，此时仍使用 `best_r2`。默认 comparison record 结构为：
-
-```json
-{
-  "experiment_name": "experiment_a",
-  "experiment_dir": "examples/experiment_a",
-  "best_r2": 0.48,
-  "best_r2_epoch": 32,
-  "best_racc": 0.91,
-  "best_racc_epoch": 30
-}
-```
-
-默认 Markdown 排名表使用固定表头：
-
-```text
-| Rank | Experiment | Directory | Best R² | R² Epoch | Best RACC | RACC Epoch |
-```
-
-### 指标 YAML schema
-
-独立配置文件的顶层只能包含非空的 `metrics` 序列。例如：
-
-```yaml
-metrics:
-  - name: accuracy
-    path:
-      - validation
-      - metrics
-      - accuracy
-    direction: maximize
-    display_name: Accuracy
-    precision: 4
-
-  - name: validation_loss
-    path:
-      - validation
-      - metrics
-      - loss
-    direction: minimize
-    display_name: Validation Loss
-    precision: 6
-```
-
-每个指标包含以下字段：
-
-- `name`：稳定且唯一的指标标识符，用作 JSON key 和 `--sort-by` 值；它不是
-  Markdown 显示标题。
-- `path`：`history.json` 中指标历史序列的嵌套字符串键路径，YAML 中必须写成
-  字符串列表。每个被比较实验都必须在该路径提供指标历史。
-- `direction`：只允许 `maximize` 或 `minimize`，用于选择单个实验内部的
-  `best_value`。
-- `display_name`：Markdown 表头使用的可读文本，可以是中文，也可以包含需要
-  Markdown 转义的字符；不能用作 `--sort-by`。
-- `precision`：Markdown 中 `best_value` 的小数位数，默认为 `6`，必须是非负
-  整数；它不改变 JSON 原始数值，也不表示百分比。
-
-例如：
-
-```yaml
-path:
-  - validation
-  - metrics
-  - accuracy
-```
-
-对应：
-
-```python
-history["validation"]["metrics"]["accuracy"]
-```
-
-`path` 不支持点号字符串、JSONPath、通配符、数组索引、自动搜索或指标发现。
-
-`maximize` 表示在单个实验的历史记录中选择最大值；`minimize` 表示选择最小值。
-`direction` 只控制实验内部的最佳值选择，不会自动决定跨实验排序方向。
-
-### 动态 CLI
-
-PowerShell：
-
-```powershell
-& "C:\Users\admin\.conda\envs\agent311\python.exe" `
-  .\compare_experiments.py `
-  --experiment-root .\examples `
-  --metrics-config .\configs\metrics.example.yaml `
-  --sort-by validation_loss `
-  --ascending `
-  --output-path .\outputs\comparison.json `
-  --markdown-output-path .\outputs\comparison.md
-```
-
-- `--metrics-config` 启用动态指标模式。
-- `--sort-by` 必须使用配置中的 `name`，不能使用 `display_name`。
-- `--ascending` 表示跨实验按所选指标的 `best_value` 从小到大排序；未提供时
-  从大到小排序。
-- `direction=minimize` 不会自动启用升序。比较 loss 时通常需要显式添加
-  `--ascending`。
-- 动态模式省略 `--sort-by` 时，使用 YAML 中第一个指标的 `name`。
-
-### 动态 JSON 输出
-
-以下是省略 `experiment_counts` 和 `failed_experiments` 的精简 payload 示例：
-
-```json
-{
-  "sort_by": "validation_loss",
-  "descending": false,
-  "metric_specs": [
-    {
-      "name": "validation_loss",
-      "path": [
-        "validation",
-        "metrics",
-        "loss"
-      ],
-      "direction": "minimize",
-      "display_name": "Validation Loss",
-      "precision": 6
-    }
-  ],
-  "comparison_records": [
-    {
-      "experiment_name": "experiment_a",
-      "experiment_dir": "examples/experiment_a",
-      "metrics": {
-        "validation_loss": {
-          "record_count": 20,
-          "first_epoch": 0,
-          "first_value": 0.8,
-          "last_epoch": 19,
-          "last_value": 0.25,
-          "best_epoch": 18,
-          "best_value": 0.24
-        }
-      }
-    }
-  ]
-}
-```
-
-JSON 保留指标历史评估结果中的记录数量、首尾值和最佳值，不受 `precision`
-格式化影响。
-
-### 动态 Markdown 输出
-
-动态 Markdown 为 YAML 中每个指标生成一列，表头使用 `display_name`，列顺序与
-`metrics` 顺序一致。单元格格式为 `<best_value> (epoch <best_epoch>)`，小数
-位数由 `precision` 控制。例如：
-
-```text
-| Rank | Experiment | Directory | Validation Loss |
-| ---: | --- | --- | ---: |
-| 1 | experiment_a | examples/experiment_a | 0.240000 (epoch 18) |
-```
-
-`comparison_records` 的已有排序顺序直接用于 Rank。Markdown 不展示
-`first_value`、`last_value` 或 `record_count`。
-
-### 配置错误与当前限制
-
-- YAML 顶层只能包含 `metrics`，且 `metrics` 必须是非空序列。
-- 同一配置中的指标 `name` 必须唯一。
-- `path` 必须与实际 `history.json` 一致；所有被比较实验都应提供配置中的指标
-  路径。单个实验缺少路径时会作为失败实验隔离记录。
-- 动态 `--sort-by` 必须使用配置中的 `name`；默认模式只允许 `best_r2` 或
-  `best_racc`。
-- 当前不支持 JSONPath、自动发现指标、由 `direction` 自动决定跨实验排序、
-  图表生成或 Web UI。
-
-
-## Rule-based Diagnostics and Recommendations / 规则诊断与建议
-
-规则诊断和建议是显式启用的确定性功能，不调用 LLM，也不包含随机生成过程。
-相同的实验历史、指标方向、最近窗口和比较结果会产生相同的诊断与建议。
-
-### 启用方式
-
-单实验：
-
-```powershell
-python generate_report.py --include-diagnostics
-```
-
-多实验：
-
-```powershell
-python compare_experiments.py --include-diagnostics
-```
-
-该开关同时启用 diagnostics 和 recommendations。默认关闭时，不会在 JSON
-中加入 `diagnostics` 字段，也不会在 Markdown 中加入相应章节。
-
-### 单实验 JSON 结构
-
-每个指标分别保存事实、诊断和建议：
-
-```json
-{
-  "diagnostics": {
-    "metrics": {
-      "r2": {
-        "facts": {
-          "recent_trend": "degrading"
-        },
-        "diagnostics": [
-          {
-            "code": "post_best_regression",
-            "severity": "warning",
-            "message": "The final value is worse than the best recorded value.",
-            "evidence": {
-              "best_epoch": 18,
-              "last_epoch": 25
-            }
-          }
-        ],
-        "recommendations": [
-          {
-            "code": "restore_best_checkpoint",
-            "message": "Prefer the best checkpoint over the final checkpoint and review the cause of recent regression.",
-            "diagnostic_codes": [
-              "post_best_regression"
-            ]
-          }
-        ]
-      }
-    }
-  }
-}
-```
-
-单实验 Markdown 在原有内容之后追加：
-
-- `## 5. 规则诊断`
-- `## 6. 规则建议`
-
-### 多实验 JSON 结构
-
-多实验比较在顶层 `diagnostics` 载荷中保存比较事实、诊断和建议：
-
-```json
-{
-  "diagnostics": {
-    "facts": {
-      "successful_experiments": 1,
-      "failed_experiments": 0
-    },
-    "diagnostics": [
-      {
-        "code": "single_successful_experiment",
-        "severity": "info",
-        "message": "Only one experiment was analyzed successfully.",
-        "evidence": {
-          "successful_experiments": 1
-        }
-      }
-    ],
-    "recommendations": [
-      {
-        "code": "add_comparison_experiments",
-        "message": "Add more successful experiments before making comparative claims.",
-        "diagnostic_codes": [
-          "single_successful_experiment"
-        ]
-      }
-    ]
-  }
-}
-```
-
-多实验 Markdown 追加：
-
-- `## Diagnostics`
-- `## Recommendations`
-
-### 当前规则范围
-
-指标历史诊断包括：
-
-- 重复或非单调 Epoch；
-- 最佳值出现在首条或末条记录；
-- 未超过初始值；
-- 最终值相对最佳值回退；
-- 最近窗口改善、退化、持平、混合或数据不足。
-
-多实验比较诊断包括：
-
-- 没有成功实验；
-- 存在分析失败；
-- 只有一个成功实验；
-- 多个实验并列第一。
-
-建议由固定诊断代码映射生成，并会合并含义相近的触发条件。例如
-`post_best_regression` 和 `recent_degradation` 会合并为
-`restore_best_checkpoint`，避免输出重复建议。
-
-
-## Generated Outputs
-
-### Single-experiment report
-
-After a successful `generate_report.py` run, the output directory contains:
-
-```text
-experiment_summary.json
-experiment_report.md
-```
-
-The Markdown report currently includes:
-
-1. Experiment configuration.
-2. Module switches.
-3. Validation metric table.
-4. Automatic experiment analysis.
-5. Rule diagnostics when `--include-diagnostics` is enabled.
-6. Deterministic recommendations when `--include-diagnostics` is enabled.
-
-### Multi-experiment comparison
-
-By default, `compare_experiments.py` generates:
-
-```text
-outputs/comparison.json
-outputs/comparison.md
-```
-
-The comparison JSON contains:
-
-1. The selected sort field and sort direction.
-2. Total, successful, and failed experiment counts.
-3. Sorted experiment metric records.
-4. Failed experiments and their error details.
-
-The human-readable Markdown report contains:
-
-1. An overview of sorting and experiment counts.
-2. A ranked experiment table with best R² and RACC values and epochs in
-   default mode, or configured metric columns in dynamic mode.
-3. A failed-experiment table when failures are present.
-4. A diagnostics table when `--include-diagnostics` is enabled.
-5. A deterministic recommendations table when diagnostics are enabled.
-
-## Example Analysis
-
-The demo experiment report identifies:
-
-- the best validation R²;
-- the best validation RACC;
-- their corresponding epochs;
-- the last recorded epoch;
-- whether the configured epoch count differs from the actual log length.
-
-When the log ends earlier than the configured training length, the report uses
-an objective statement:
-
-```text
-The run may have ended because of early stopping, manual interruption,
-or another termination condition.
-```
-
-It does not assume that early stopping was definitely responsible.
-
-## Development History
-
-The project has been developed through small, verifiable Git commits:
-
-1. Add YAML configuration reader.
-2. Analyze validation R² history.
-3. Generalize validation metric analysis.
-4. Build structured experiment summary.
-5. Generate JSON and Markdown reports.
-6. Parameterize experiment input paths.
-7. Parameterize report output paths.
-8. Add command-line report interface.
-9. Discover valid experiment directories.
-10. Add batch experiment analysis with failure isolation.
-11. Build normalized experiment comparison records.
-12. Add metric-based comparison sorting.
-13. Generate structured comparison JSON output.
-14. Add an end-to-end comparison pipeline.
-15. Add the multi-experiment comparison CLI.
-16. Add automated tests for the comparison workflow.
-17. Document multi-experiment comparison usage.
-18. Build and write the multi-experiment Markdown comparison report.
-19. Integrate Markdown output into the comparison pipeline and CLI.
-20. Add metric-history and comparison diagnostic cores.
-21. Integrate opt-in diagnostics into summaries, JSON, Markdown, and CLIs.
-22. Add deterministic recommendations from diagnostic codes.
-23. Integrate recommendations into single- and multi-experiment reports.
-
-The complete evolution is available in the repository commit history.
+GitHub Actions validates pull requests and pushes to `main` on Python 3.11. A known third-party Starlette/httpx deprecation warning may appear; it is not a product test failure.
+
+## Current limitations
+
+- Experiment discovery scans direct child directories only.
+- Metric paths are explicit string-key sequences; there is no JSONPath or automatic metric discovery.
+- Diagnostics and recommendations are deterministic rules, not causal proof or a substitute for domain review.
+- Tool calling is bounded and synchronous; there is no background job system or pre-emptive cancellation.
+- Sessions and their repository are in-memory and process-local.
+- The FastAPI adapter intentionally omits authentication, CORS, persistence, and a server launcher.
+- Real-provider behavior depends on the injected provider-compatible client and model.
+- The repository is not yet packaged as an installable distribution, and a project license has not been selected.
 
 ## Roadmap
 
-- [x] YAML configuration reader
-- [x] JSON training history reader
-- [x] Validation R² analysis
-- [x] Generalized metric analysis
-- [x] Structured experiment summary
-- [x] JSON report generation
-- [x] Markdown report generation
-- [x] Configurable input and output paths
-- [x] Command-line interface
-- [x] Multi-experiment batch analysis
-- [x] Experiment comparison tables
-- [x] Multi-experiment Markdown comparison report
-- [x] Configurable experiment metrics from YAML
-- [x] Deterministic rule-based diagnostics
-- [x] Deterministic diagnostic recommendations
-- [ ] Trait-wise metric summaries
-- [ ] Configuration and schema validation
-- [x] Automated tests with `pytest`
-- [x] Automated pytest validation with GitHub Actions
-- [ ] LLM Tool Calling
-- [ ] LangGraph workflow
-- [ ] RAG support
-- [ ] MCP integration
-- [ ] FastAPI service
-- [ ] Human-in-the-loop review
-- [ ] Docker deployment
-- [ ] Web interface
+Near-term work should deepen the existing product boundaries rather than replace them with a new framework:
 
-## Planned Architecture
+- improve user-facing examples and operational documentation;
+- strengthen evaluation of grounded Copilot answers and tool-selection behavior;
+- define authentication and persistence requirements before broader HTTP deployment;
+- add concurrency hardening before any multi-worker session architecture;
+- improve packaging and release ergonomics.
 
-```text
-Experiment Files
-      ↓
-Configuration and History Readers
-      ↓
-Validation and Metric Analysis
-      ↓
-Rule Diagnostics and Deterministic Recommendations
-      ↓
-Structured Experiment Summary
-      ↓
-JSON / Markdown Reports
-      ↓
-Multi-experiment Comparison
-      ↓
-LLM and Agent Tool Interface
-```
-
-## Notes
-
-The files under `examples/` are demonstration inputs. Local dataset paths,
-credentials, API keys, and private experiment data should not be committed.
-
-## License
-
-A license has not yet been selected.
+RAG, LangGraph, MCP, multi-agent orchestration, a frontend, and distributed persistence are possible future explorations, not current commitments or immediate prerequisites.
