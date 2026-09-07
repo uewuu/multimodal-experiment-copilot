@@ -1,0 +1,92 @@
+{
+  "answer": "Compared 2 experiments successfully: baseline, candidate. Diagnostics: tied_best_experiments.",
+  "comparison": {
+    "comparison_records": [
+      {
+        "best_r2": 0.82,
+        "best_r2_epoch": 1,
+        "best_racc": 0.78,
+        "best_racc_epoch": 1,
+        "experiment_dir": "<temporary-workspace>/baseline",
+        "experiment_name": "baseline"
+      },
+      {
+        "best_r2": 0.82,
+        "best_r2_epoch": 1,
+        "best_racc": 0.91,
+        "best_racc_epoch": 1,
+        "experiment_dir": "<temporary-workspace>/candidate",
+        "experiment_name": "candidate"
+      }
+    ],
+    "descending": true,
+    "diagnostics": {
+      "diagnostics": [
+        {
+          "code": "tied_best_experiments",
+          "evidence": {
+            "experiment_names": [
+              "baseline",
+              "candidate"
+            ],
+            "sort_by": "best_r2",
+            "top_value": 0.82
+          },
+          "message": "Multiple experiments share the best ranked value.",
+          "severity": "info"
+        }
+      ],
+      "facts": {
+        "best_vs_worst_gap": 0.0,
+        "descending": true,
+        "failed_experiments": 0,
+        "has_failures": false,
+        "has_successful_experiments": true,
+        "ranked_experiment_count": 2,
+        "second_experiment_name": "candidate",
+        "second_value": 0.82,
+        "single_successful_experiment": false,
+        "sort_by": "best_r2",
+        "success_rate": 1.0,
+        "successful_experiments": 2,
+        "tied_best_experiments": [
+          "baseline",
+          "candidate"
+        ],
+        "top_experiment_name": "baseline",
+        "top_value": 0.82,
+        "top_vs_second_gap": 0.0,
+        "total_experiments": 2,
+        "worst_experiment_name": "candidate",
+        "worst_value": 0.82
+      },
+      "recommendations": [
+        {
+          "code": "apply_secondary_tie_breaker",
+          "diagnostic_codes": [
+            "tied_best_experiments"
+          ],
+          "message": "Use a secondary metric, complexity, or stability criterion to distinguish tied best experiments."
+        }
+      ]
+    },
+    "experiment_counts": {
+      "failed": 0,
+      "successful": 2,
+      "total": 2
+    },
+    "failed_experiments": [],
+    "sort_by": "best_r2"
+  },
+  "runtime": {
+    "provider_request_count": 2,
+    "tool_invocation_count": 1
+  },
+  "tool_call": {
+    "arguments": {
+      "experiment_root": ".",
+      "include_diagnostics": true
+    },
+    "name": "compare_experiments"
+  }
+}
