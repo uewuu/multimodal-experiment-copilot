@@ -347,9 +347,9 @@ Generated files under `outputs/` are ignored by Git.
 
 ## FI case study
 
-[`examples/demo_experiment`](examples/demo_experiment) is a sanitized multimodal personality-recognition experiment fixture. It demonstrates a realistic configuration and histories for R2, RACC, and individual trait metrics.
+[`examples/demo_experiment`](examples/demo_experiment) contains maintainer-authorized, sanitized experiment configuration metadata and aggregate metric histories generated from the maintainer's own FI experiments. It demonstrates realistic R2, RACC, and individual trait metrics.
 
-FI is an example workload, not a product specialization. The repository does not include datasets, model checkpoints, credentials, or licensing-sensitive assets. The credential-free deterministic demo uses separate generic synthetic experiments.
+FI is an example workload, not a product specialization. The fixture does not include the underlying FI dataset, source media, pretrained model weights, or checkpoints, and it does not grant rights to those external materials. The credential-free deterministic demo uses separate generic synthetic experiments.
 
 ## Testing and status
 
@@ -376,7 +376,13 @@ GitHub Actions validates pull requests and pushes to `main` on Python 3.11. A kn
 - Sessions and their repository are in-memory and process-local.
 - The FastAPI adapter intentionally omits authentication, CORS, persistence, and a server launcher.
 - Real-provider behavior depends on the injected provider-compatible client and model.
-- The repository is not yet packaged as an installable distribution, and a project license has not been selected.
+- The repository is not yet packaged as an installable distribution.
+
+## License
+
+The project's first-party source code and documentation are licensed under the [Apache License 2.0](LICENSE). See `LICENSE` for the full terms.
+
+Third-party dependencies, datasets, pretrained models, and external assets remain subject to their own licenses and terms.
 
 ## Roadmap
 
