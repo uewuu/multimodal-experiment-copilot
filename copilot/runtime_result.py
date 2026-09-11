@@ -1,5 +1,8 @@
 """Structured result for one bounded Copilot turn."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Callable
 
 from llm_adapters.openai_tool_adapter import (
@@ -22,7 +25,29 @@ from .runtime import (
     _validate_question,
     _validate_request_options,
 )
+from .run_metadata import CopilotProviderUsage
 from .session import CopilotTurn, _normalize_tool_trace
+
+
+_SUCCESSFUL_TURN_EVIDENCE: ContextVar[
+    list[tuple[int, int, tuple[CopilotProviderUsage, ...]]] | None
+] = ContextVar("successful_turn_evidence", default=None)
+
+
+@contextmanager
+def _capture_successful_turn_evidence() -> Iterator[
+    list[tuple[int, int, tuple[CopilotProviderUsage, ...]]]
+]:
+    """Collect evidence without changing the public CopilotTurn projection."""
+    # One slot carries the completed (request count, response count, usages).
+    evidence: list[tuple[int, int, tuple[CopilotProviderUsage, ...]]] = [
+        (0, 0, ())
+    ]
+    token = _SUCCESSFUL_TURN_EVIDENCE.set(evidence)
+    try:
+        yield evidence
+    finally:
+        _SUCCESSFUL_TURN_EVIDENCE.reset(token)
 
 
 def run_copilot_turn_with_result(
@@ -90,4 +115,18 @@ def _run_copilot_turn_with_result(
             tool_invocations=tool_invocations,
         )
         _check_turn_deadline()
+        evidence = _SUCCESSFUL_TURN_EVIDENCE.get()
+        if evidence is not None:
+            evidence[0] = (
+                trace.provider_request_count,
+                trace.provider_response_count,
+                tuple(
+                    CopilotProviderUsage(
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        total_tokens=usage.total_tokens,
+                    )
+                    for usage in trace.provider_usages
+                ),
+            )
         return result
