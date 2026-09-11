@@ -5,6 +5,12 @@ from .failure_observability import (
     run_copilot_turn_with_failure_observability,
 )
 from .runtime import run_copilot_turn
+from .run_metadata import (
+    CopilotProviderUsage,
+    CopilotRunEvent,
+    CopilotRunMetadata,
+    CopilotRunUsage,
+)
 from .runtime_observability import (
     CopilotObservedResult,
     CopilotRuntimeMetrics,
@@ -19,6 +25,10 @@ from .session_repository import CopilotSessionRepository
 __all__ = [
     "CopilotFailureObservation",
     "CopilotObservedResult",
+    "CopilotProviderUsage",
+    "CopilotRunEvent",
+    "CopilotRunMetadata",
+    "CopilotRunUsage",
     "CopilotRuntimeMetrics",
     "CopilotService",
     "CopilotSession",
