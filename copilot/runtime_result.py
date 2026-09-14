@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from typing import Callable
 
 from llm_adapters.openai_tool_adapter import (
+    _ProviderEvidence,
     _experiment_path_policy_scope,
     _run_tool_call_cycle_with_trace,
 )
@@ -96,13 +97,38 @@ def _run_copilot_turn_with_result(
     path_policy = _build_experiment_path_policy(validated_context)
     with _turn_deadline_scope(validated_timeout):
         with _experiment_path_policy_scope(path_policy):
-            trace = _run_tool_call_cycle_with_trace(
-                client,
-                progress_callback,
-                model=model,
-                messages=messages,
-                **request_options,
+            captured_evidence = _SUCCESSFUL_TURN_EVIDENCE.get()
+            provider_evidence = (
+                _ProviderEvidence()
+                if captured_evidence is not None
+                else None
             )
+            try:
+                trace = _run_tool_call_cycle_with_trace(
+                    client,
+                    progress_callback,
+                    provider_evidence,
+                    model=model,
+                    messages=messages,
+                    **request_options,
+                )
+            finally:
+                if (
+                    captured_evidence is not None
+                    and provider_evidence is not None
+                ):
+                    captured_evidence[0] = (
+                        provider_evidence.provider_request_count,
+                        provider_evidence.provider_response_count,
+                        tuple(
+                            CopilotProviderUsage(
+                                input_tokens=usage.input_tokens,
+                                output_tokens=usage.output_tokens,
+                                total_tokens=usage.total_tokens,
+                            )
+                            for usage in provider_evidence.provider_usages
+                        ),
+                    )
         answer = _extract_final_content(trace.response)
         tool_call_content, tool_invocations = _normalize_tool_trace(
             trace.assistant_message,
