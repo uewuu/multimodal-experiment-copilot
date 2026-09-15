@@ -5,6 +5,13 @@ import threading
 from fastapi import Body, FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from .failure_observability import CopilotFailureObservation
+from .run_metadata import (
+    CopilotProviderUsage,
+    CopilotRunEvent,
+    CopilotRunMetadata,
+    CopilotRunUsage,
+)
 from .runtime_observability import (
     CopilotObservedResult,
     CopilotRuntimeMetrics,
@@ -15,6 +22,58 @@ from .session_repository import CopilotSessionRepository
 
 
 __all__ = ("create_app",)
+
+_RUN_HEADER = "X-Copilot-Run-Id"
+
+
+def _map_provider_usage(
+    usage: CopilotProviderUsage,
+) -> dict[str, int | None]:
+    return {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+    }
+
+
+def _map_run_usage(usage: CopilotRunUsage) -> dict[str, object]:
+    return {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+        "provider_request_count": usage.provider_request_count,
+        "provider_response_count": usage.provider_response_count,
+        "usage_report_count": usage.usage_report_count,
+        "complete": usage.complete,
+    }
+
+
+def _map_run_event(event: CopilotRunEvent) -> dict[str, object]:
+    return {
+        "run_id": event.run_id,
+        "sequence": event.sequence,
+        "kind": event.kind,
+        "provider_request_index": event.provider_request_index,
+        "tool_invocation_index": event.tool_invocation_index,
+        "tool_call_id": event.tool_call_id,
+        "tool_name": event.tool_name,
+        "usage": (
+            None if event.usage is None else _map_provider_usage(event.usage)
+        ),
+        "failure_stage": event.failure_stage,
+    }
+
+
+def _map_run(run: CopilotRunMetadata) -> dict[str, object]:
+    return {
+        "run_id": run.run_id,
+        "usage": _map_run_usage(run.usage),
+        "events": [_map_run_event(event) for event in run.events],
+    }
+
+
+def _run_headers(run: CopilotRunMetadata | None) -> dict[str, str]:
+    return {} if run is None else {_RUN_HEADER: run.run_id}
 
 
 def _map_tool_invocation(
@@ -53,10 +112,13 @@ def _map_metrics(
 def _map_observed_result(
     result: CopilotObservedResult,
 ) -> dict[str, object]:
-    return {
+    mapped = {
         "turn": _map_turn(result.turn),
         "metrics": _map_metrics(result.metrics),
     }
+    if result.run is not None:
+        mapped["run"] = _map_run(result.run)
+    return mapped
 
 
 def create_app(
@@ -102,9 +164,40 @@ def create_app(
         tool_invocation_count: int
         elapsed_seconds: float
 
+    class _ProviderUsageResponse(BaseModel):
+        input_tokens: int | None
+        output_tokens: int | None
+        total_tokens: int | None
+
+    class _RunUsageResponse(_ProviderUsageResponse):
+        provider_request_count: int
+        provider_response_count: int
+        usage_report_count: int
+        complete: bool
+
+    class _RunEventResponse(BaseModel):
+        run_id: str
+        sequence: int
+        kind: str
+        provider_request_index: int | None
+        tool_invocation_index: int | None
+        tool_call_id: str | None
+        tool_name: str | None
+        usage: _ProviderUsageResponse | None
+        failure_stage: str | None
+
+    class _RunResponse(BaseModel):
+        run_id: str
+        usage: _RunUsageResponse
+        events: list[_RunEventResponse]
+
     class _ObservedResultResponse(BaseModel):
         turn: _TurnResponse
         metrics: _RuntimeMetricsResponse
+        run: _RunResponse | None = None
+
+    class _ObservedTurnResponse(_TurnResponse):
+        run: _RunResponse | None = None
 
     class _SessionCreatedResponse(BaseModel):
         session_id: str
@@ -118,25 +211,50 @@ def create_app(
     @application.post(
         "/v1/copilot/turns",
         response_model=_ObservedResultResponse,
+        response_model_exclude_unset=True,
     )
-    def run_one_shot(request: _QuestionRequest) -> dict[str, object]:
+    def run_one_shot(
+        request: _QuestionRequest,
+        *,
+        response: Response = None,
+    ) -> dict[str, object]:
+        # Keep only transport headers for this request, never observation state.
+        failure_headers: dict[str, str] = {}
+
+        def on_failure(observation: CopilotFailureObservation) -> None:
+            failure_headers.update(_run_headers(observation.run))
+
         with business_lock:
             try:
-                result = service.run(
-                    request.question,
-                    experiment_context=experiment_context,
-                    turn_timeout_seconds=turn_timeout_seconds,
-                )
+                observed_run = getattr(service, "_run_with_observability", None)
+                if callable(observed_run):
+                    result = observed_run(
+                        request.question,
+                        experiment_context=experiment_context,
+                        turn_timeout_seconds=turn_timeout_seconds,
+                        on_failure=on_failure,
+                    )
+                else:
+                    # Preserve the original contract for injected services.
+                    result = service.run(
+                        request.question,
+                        experiment_context=experiment_context,
+                        turn_timeout_seconds=turn_timeout_seconds,
+                    )
             except TimeoutError:
                 raise HTTPException(
                     status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                     detail="Copilot turn timed out",
+                    headers=failure_headers or None,
                 ) from None
             except Exception:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Internal server error",
+                    headers=failure_headers or None,
                 ) from None
+        if response is not None:
+            response.headers.update(_run_headers(result.run))
         return _map_observed_result(result)
 
     @application.post(
@@ -169,12 +287,21 @@ def create_app(
 
     @application.post(
         "/v1/sessions/{session_id}/turns",
-        response_model=_TurnResponse,
+        response_model=_ObservedTurnResponse,
+        response_model_exclude_unset=True,
     )
     def run_session_turn(
         session_id: str,
         request: _QuestionRequest,
+        *,
+        response: Response = None,
     ) -> dict[str, object]:
+        failure_headers: dict[str, str] = {}
+
+        def on_failure(observation: CopilotFailureObservation) -> None:
+            failure_headers.update(_run_headers(observation.run))
+
+        result = None
         with business_lock:
             try:
                 session = session_repository.get(session_id)
@@ -190,18 +317,33 @@ def create_app(
                 ) from None
 
             try:
-                turn = session.ask_with_result(request.question)
+                observed_ask = getattr(session, "ask_with_observability", None)
+                if callable(observed_ask):
+                    result = observed_ask(
+                        request.question,
+                        on_failure=on_failure,
+                    )
+                    turn = result.turn
+                else:
+                    turn = session.ask_with_result(request.question)
             except TimeoutError:
                 raise HTTPException(
                     status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                     detail="Copilot turn timed out",
+                    headers=failure_headers or None,
                 ) from None
             except Exception:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Internal server error",
+                    headers=failure_headers or None,
                 ) from None
-        return _map_turn(turn)
+        mapped = _map_turn(turn)
+        if result is not None and result.run is not None:
+            mapped["run"] = _map_run(result.run)
+            if response is not None:
+                response.headers.update(_run_headers(result.run))
+        return mapped
 
     @application.delete(
         "/v1/sessions/{session_id}",
