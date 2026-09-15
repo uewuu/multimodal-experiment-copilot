@@ -2,7 +2,10 @@
 
 from dataclasses import dataclass
 from time import perf_counter as _perf_counter
+from typing import Callable
 from uuid import uuid4 as _uuid4
+
+import copilot as _copilot
 
 from .run_metadata import (
     CopilotProviderUsage,
@@ -12,6 +15,7 @@ from .run_metadata import (
 )
 from .runtime_result import (
     _capture_successful_turn_evidence,
+    _run_copilot_turn_with_result,
     run_copilot_turn_with_result,
 )
 from .session import CopilotTurn
@@ -105,17 +109,72 @@ def run_copilot_turn_with_observability(
     **request_options: object,
 ) -> CopilotObservedResult:
     """Run one bounded Copilot turn and report minimal success metrics."""
+    return _run_copilot_turn_with_observability(
+        client,
+        model=model,
+        question=question,
+        experiment_context=experiment_context,
+        turn_timeout_seconds=turn_timeout_seconds,
+        **request_options,
+    )
+
+
+def _run_copilot_turn_with_observability(
+    client: object,
+    message_builder: Callable[[str], list[dict]] | None = None,
+    on_failure: "Callable[[_copilot.CopilotFailureObservation], None] | None" = None,
+    /,
+    *,
+    model: str,
+    question: str,
+    experiment_context: dict[str, object] | None = None,
+    turn_timeout_seconds: float | None = None,
+    **request_options: object,
+) -> CopilotObservedResult:
+    """Observe a turn, optionally using Session-prepared messages."""
+    progress = None
+    if on_failure is not None:
+        if not callable(on_failure):
+            raise TypeError("on_failure must be callable")
+        # Failure models depend on this module; import only during execution.
+        from .failure_observability import _ProgressState, _notify_failure
+
+        progress = _ProgressState()
+
     run_id = str(_uuid4())
     start = _perf_counter()
     with _capture_successful_turn_evidence() as evidence:
-        turn = run_copilot_turn_with_result(
-            client,
-            model=model,
-            question=question,
-            experiment_context=experiment_context,
-            turn_timeout_seconds=turn_timeout_seconds,
-            **request_options,
-        )
+        try:
+            if message_builder is None and progress is None:
+                turn = run_copilot_turn_with_result(
+                    client,
+                    model=model,
+                    question=question,
+                    experiment_context=experiment_context,
+                    turn_timeout_seconds=turn_timeout_seconds,
+                    **request_options,
+                )
+            else:
+                turn = _run_copilot_turn_with_result(
+                    client,
+                    None if progress is None else progress.update,
+                    message_builder,
+                    model=model,
+                    question=question,
+                    experiment_context=experiment_context,
+                    turn_timeout_seconds=turn_timeout_seconds,
+                    **request_options,
+                )
+        except BaseException:
+            if on_failure is not None and progress is not None:
+                _notify_failure(
+                    on_failure,
+                    progress=progress,
+                    run_id=run_id,
+                    elapsed_seconds=_perf_counter() - start,
+                    evidence=evidence[0],
+                )
+            raise
     finish = _perf_counter()
     tool_count = len(turn.tool_invocations)
     provider_count = 1 if tool_count == 0 else 2

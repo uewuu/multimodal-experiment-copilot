@@ -75,6 +75,7 @@ def run_copilot_turn_with_result(
 def _run_copilot_turn_with_result(
     client: object,
     progress_callback: Callable[[str], None] | None = None,
+    message_builder: Callable[[str], list[dict]] | None = None,
     /,
     *,
     model: str,
@@ -90,9 +91,10 @@ def _run_copilot_turn_with_result(
         turn_timeout_seconds,
         request_options,
     )
-    messages = _build_messages(
-        validated_question,
-        validated_context,
+    messages = (
+        _build_messages(validated_question, validated_context)
+        if message_builder is None
+        else message_builder(validated_question)
     )
     path_policy = _build_experiment_path_policy(validated_context)
     with _turn_deadline_scope(validated_timeout):

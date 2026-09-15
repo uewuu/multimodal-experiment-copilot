@@ -3,6 +3,8 @@
 from copy import deepcopy
 from dataclasses import dataclass
 
+import copilot as _copilot
+
 from llm_adapters.openai_tool_adapter import (
     _experiment_path_policy_scope,
     _run_tool_call_cycle_with_trace,
@@ -327,6 +329,34 @@ class CopilotSession:
 
     def ask(self, question: str) -> str:
         return self.ask_with_result(question).answer
+
+    def ask_with_observability(
+        self,
+        question: str,
+        *,
+        on_failure=None,
+    ) -> "_copilot.CopilotObservedResult":
+        """Observe a Runtime turn and commit its plain turn only on success."""
+        # Runtime depends on CopilotTurn here. Defer the execution import and
+        # resolve the result annotation through the initialized public package.
+        from .runtime_observability import _run_copilot_turn_with_observability
+
+        retained = self._retained_history()
+        result = _run_copilot_turn_with_observability(
+            self._client,
+            lambda validated_question: self._build_turn_messages(
+                validated_question,
+                retained,
+            ),
+            on_failure,
+            model=self._model,
+            question=question,
+            experiment_context=self._experiment_context,
+            turn_timeout_seconds=self._turn_timeout_seconds,
+            **deepcopy(self._request_options),
+        )
+        self._history = (retained + (result.turn,))[-self._max_turns:]
+        return result
 
     def export_history(self) -> list[dict[str, object]]:
         return [

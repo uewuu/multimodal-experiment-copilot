@@ -6,6 +6,7 @@ from typing import Callable
 from uuid import uuid4 as _uuid4
 
 from .run_metadata import (
+    CopilotProviderUsage,
     CopilotRunEvent,
     CopilotRunMetadata,
     _aggregate_run_usage,
@@ -64,6 +65,63 @@ class _ProgressState:
             self.stage = "tool_result_serialization"
 
 
+def _notify_failure(
+    on_failure: Callable[[CopilotFailureObservation], None],
+    *,
+    progress: _ProgressState,
+    run_id: str,
+    elapsed_seconds: float,
+    evidence: tuple[int, int, tuple[CopilotProviderUsage, ...]],
+) -> None:
+    """Publish Runtime-owned failure evidence without masking the failure."""
+    provider_request_count, provider_response_count, provider_usages = evidence
+    events = [
+        CopilotRunEvent(
+            run_id=run_id,
+            sequence=0,
+            kind="run.started",
+        )
+    ]
+    for usage in provider_usages:
+        events.append(
+            CopilotRunEvent(
+                run_id=run_id,
+                sequence=len(events),
+                kind="provider.response.received",
+                usage=usage,
+            )
+        )
+    events.append(
+        CopilotRunEvent(
+            run_id=run_id,
+            sequence=len(events),
+            kind="run.failed",
+            failure_stage=progress.stage,
+        )
+    )
+    run = CopilotRunMetadata(
+        run_id=run_id,
+        usage=_aggregate_run_usage(
+            provider_usages,
+            provider_request_count=provider_request_count,
+            provider_response_count=provider_response_count,
+            terminal_success=False,
+        ),
+        events=tuple(events),
+    )
+    observation = CopilotFailureObservation(
+        stage=progress.stage,
+        provider_request_count=progress.provider_request_count,
+        tool_invocation_count=progress.tool_invocation_count,
+        elapsed_seconds=elapsed_seconds,
+        run=run,
+    )
+    try:
+        on_failure(observation)
+    except BaseException:
+        pass
+
+
 def run_copilot_turn_with_failure_observability(
     client: object,
     *,
@@ -94,56 +152,13 @@ def run_copilot_turn_with_failure_observability(
             )
         except BaseException:
             finish = _perf_counter()
-            (
-                provider_request_count,
-                provider_response_count,
-                provider_usages,
-            ) = evidence[0]
-            events = [
-                CopilotRunEvent(
-                    run_id=run_id,
-                    sequence=0,
-                    kind="run.started",
-                )
-            ]
-            for usage in provider_usages:
-                events.append(
-                    CopilotRunEvent(
-                        run_id=run_id,
-                        sequence=len(events),
-                        kind="provider.response.received",
-                        usage=usage,
-                    )
-                )
-            events.append(
-                CopilotRunEvent(
-                    run_id=run_id,
-                    sequence=len(events),
-                    kind="run.failed",
-                    failure_stage=progress.stage,
-                )
-            )
-            run = CopilotRunMetadata(
+            _notify_failure(
+                on_failure,
+                progress=progress,
                 run_id=run_id,
-                usage=_aggregate_run_usage(
-                    provider_usages,
-                    provider_request_count=provider_request_count,
-                    provider_response_count=provider_response_count,
-                    terminal_success=False,
-                ),
-                events=tuple(events),
-            )
-            observation = CopilotFailureObservation(
-                stage=progress.stage,
-                provider_request_count=progress.provider_request_count,
-                tool_invocation_count=progress.tool_invocation_count,
                 elapsed_seconds=finish - start,
-                run=run,
+                evidence=evidence[0],
             )
-            try:
-                on_failure(observation)
-            except BaseException:
-                pass
             raise
 
     finish = _perf_counter()
