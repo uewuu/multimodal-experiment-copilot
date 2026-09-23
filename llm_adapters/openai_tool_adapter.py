@@ -9,6 +9,7 @@ from typing import Callable
 
 from tool_layer import invoke_tool, list_tools
 
+from .tool_binding import _get_bound_tools
 from .tool_result_governance import _validate_tool_result_bytes
 from .turn_deadline import (
     _check_turn_deadline,
@@ -152,7 +153,8 @@ def _create_tool_call_response(
     if "tools" in request_options:
         raise TypeError("tools are provided by the tool registry")
 
-    tools = list_tools()
+    collection = _get_bound_tools()
+    tools = list_tools() if collection is None else collection.list_tools()
     remaining = _remaining_turn_seconds()
     provider_options = request_options
     if remaining is not None:
@@ -324,6 +326,7 @@ def _execute_tool_calls(
 
     messages: list[dict] = []
     cumulative_result_bytes = 0
+    collection = _get_bound_tools()
     for tool_call_id, function_name, arguments in validated_calls:
         _check_turn_deadline()
         if progress_callback is not None:
@@ -334,7 +337,11 @@ def _execute_tool_calls(
             if policy is None
             else policy(function_name, arguments)
         )
-        result = invoke_tool(function_name, secured_arguments)
+        result = (
+            invoke_tool(function_name, secured_arguments)
+            if collection is None
+            else collection.invoke_tool(function_name, secured_arguments)
+        )
         _check_turn_deadline()
         if progress_callback is not None:
             progress_callback("tool_result_serialization")
