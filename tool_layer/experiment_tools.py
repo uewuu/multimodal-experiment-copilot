@@ -1,7 +1,8 @@
 """单实验分析 Tool Layer。"""
 
+from collections.abc import Sequence
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from compare_experiments import (
     analyze_experiment_dirs,
@@ -9,7 +10,10 @@ from compare_experiments import (
     find_experiment_dirs,
 )
 from generate_report import resolve_experiment_paths
+from metrics import MetricSpec
+from read_config import read_config_evidence
 from read_metrics_config import read_metric_specs_config
+from read_test_metrics import read_test_metrics
 from summarize_experiment import build_experiment_summary
 
 
@@ -89,6 +93,98 @@ def analyze_experiment(
         allow_nan=False,
     )
     return result
+
+
+def _evidence_file(root: Path, value: str) -> tuple[Path, str]:
+    """Authorize an experiment-relative file before any reader opens it.
+
+    Missing inside files remain valid candidates for the reader's status
+    handling. Windows path forms are checked even on non-Windows hosts.
+    """
+    if not isinstance(value, str):
+        raise TypeError("evidence file path must be a string")
+    if not value.strip() or "\x00" in value:
+        raise ValueError("evidence file path must be nonblank and valid")
+    relative = Path(value)
+    windows = PureWindowsPath(value)
+    if (relative.is_absolute() or windows.drive or windows.root
+            or ".." in relative.parts or ".." in windows.parts
+            or not relative.parts or windows.is_reserved()
+            or ":" in value):
+        raise ValueError("evidence file must be an experiment-relative path")
+    candidate = (root / relative).resolve(strict=False)
+    if not candidate.is_relative_to(root) or candidate == root:
+        raise ValueError("evidence file is outside the experiment directory")
+    return candidate, relative.as_posix()
+
+
+def analyze_experiment_evidence(
+    experiment_dir: str,
+    *,
+    config_paths: Sequence[Sequence[str]] = (),
+    test_metrics_file: str | None = None,
+    test_metric_specs: Sequence[MetricSpec] = (),
+    metrics_config: str | None = None,
+    include_diagnostics: bool = False,
+) -> dict:
+    """Compose legacy validation with explicitly selected file evidence.
+
+    File options are relative to this host-selected experiment. All child
+    paths are authorized before reading; this does not replace Agent-level
+    authorization of the experiment itself. No Test file is discovered by
+    default. CSV data failures retain the Reader's status; argument, path and
+    unexpected exceptions propagate. No checkpoint provenance is inferred.
+    """
+    if not isinstance(experiment_dir, str):
+        raise TypeError("experiment_dir must be a string")
+    if not experiment_dir.strip():
+        raise ValueError("experiment_dir must not be empty or whitespace")
+    if not isinstance(include_diagnostics, bool):
+        raise TypeError("include_diagnostics must be a boolean")
+    if (isinstance(test_metric_specs, (str, bytes, bytearray))
+            or not isinstance(test_metric_specs, Sequence)):
+        raise TypeError("test_metric_specs must be a sequence")
+    if (test_metrics_file is not None) != bool(test_metric_specs):
+        raise ValueError("test_metrics_file and test_metric_specs must be supplied together")
+
+    root = Path(experiment_dir).resolve(strict=True)
+    if not root.is_dir():
+        raise NotADirectoryError("experiment_dir must be a directory")
+    _evidence_file(root, "hparams.yaml")
+    _evidence_file(root, "history.json")
+    metric_path = (
+        None if metrics_config is None else _evidence_file(root, metrics_config)[0]
+    )
+    test_path = None
+    if test_metrics_file is not None:
+        test_path, test_source = _evidence_file(root, test_metrics_file)
+
+    # Keep the authorized input name, as the legacy analysis does, so the
+    # Reader's source metadata and bounded projection remain unchanged.
+    configuration_evidence = read_config_evidence(root / "hparams.yaml", config_paths)
+    legacy = analyze_experiment(
+        str(root),
+        metrics_config=None if metric_path is None else str(metric_path),
+        include_diagnostics=include_diagnostics,
+    )
+    test_results = {"status": "not_requested", "metrics": {}}
+    if test_path is not None:
+        test_results = read_test_metrics(test_path, test_metric_specs)
+        test_results["source"]["file"] = test_source
+        # Rebasing source metadata must not bypass the Reader's output bound.
+        encoded = json.dumps(test_results, ensure_ascii=False, allow_nan=False,
+                             separators=(",", ":")).encode("utf-8")
+        if len(encoded) > 16 * 1024:
+            raise ValueError("experiment-relative test evidence exceeds 16 KiB")
+    return {
+        **legacy,
+        "configuration_evidence": configuration_evidence,
+        "validation_evidence": {
+            "evidence_kind": "validation_history",
+            "source": {"file": "history.json"},
+        },
+        "test_results": test_results,
+    }
 
 
 def compare_experiments(
