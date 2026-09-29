@@ -1,6 +1,8 @@
 """单实验分析 Tool Layer。"""
 
 from collections.abc import Sequence
+from copy import deepcopy
+from dataclasses import dataclass
 import json
 from pathlib import Path, PureWindowsPath
 
@@ -185,6 +187,98 @@ def analyze_experiment_evidence(
         },
         "test_results": test_results,
     }
+
+
+@dataclass(frozen=True, slots=True, init=False, eq=False, repr=False)
+class ExperimentEvidenceTools:
+    """Opt-in evidence analysis bound to one host-selected experiment.
+
+    Host selections are detached snapshots. Session path authorization still
+    runs before dispatch; this set additionally requires the exact bound root.
+    Evidence reading and result semantics remain with the composition function.
+    """
+
+    _experiment_dir: Path
+    _config_paths: Sequence[Sequence[str]]
+    _test_metrics_file: str | None
+    _test_metric_specs: Sequence[MetricSpec]
+    _metrics_config: str | None
+
+    def __init__(
+        self,
+        experiment_dir: str,
+        *,
+        config_paths: Sequence[Sequence[str]] = (),
+        test_metrics_file: str | None = None,
+        test_metric_specs: Sequence[MetricSpec] = (),
+        metrics_config: str | None = None,
+    ) -> None:
+        if not isinstance(experiment_dir, str):
+            raise TypeError("experiment_dir must be a string")
+        if not experiment_dir.strip():
+            raise ValueError("experiment_dir must not be empty or whitespace")
+        root = Path(experiment_dir).resolve(strict=True)
+        if not root.is_dir():
+            raise NotADirectoryError("experiment_dir must be a directory")
+        object.__setattr__(self, "_experiment_dir", root)
+        object.__setattr__(self, "_config_paths", deepcopy(config_paths))
+        object.__setattr__(self, "_test_metrics_file", deepcopy(test_metrics_file))
+        object.__setattr__(self, "_test_metric_specs", deepcopy(test_metric_specs))
+        object.__setattr__(self, "_metrics_config", deepcopy(metrics_config))
+
+    def list_tools(self) -> list[dict]:
+        """Return a fresh description exposing only model-owned arguments."""
+        return [{
+            "type": "function",
+            "function": {
+                "name": "analyze_experiment_evidence",
+                "description": (
+                    "Read selected configuration, validation history and optional "
+                    "test evidence for the host-bound experiment. File-reported "
+                    "metrics do not establish checkpoint provenance."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "experiment_dir": {"type": "string"},
+                        "include_diagnostics": {"type": "boolean", "default": False},
+                    },
+                    "required": ["experiment_dir"],
+                    "additionalProperties": False,
+                },
+            },
+        }]
+
+    def invoke_tool(self, tool_name: str, arguments: dict) -> dict:
+        """Validate the model boundary, then delegate with host selections."""
+        if not isinstance(tool_name, str):
+            raise TypeError("tool_name must be a string")
+        if not tool_name.strip():
+            raise ValueError("tool_name must not be empty or whitespace")
+        if tool_name != "analyze_experiment_evidence":
+            raise KeyError("unknown evidence tool")
+        if type(arguments) is not dict:
+            raise TypeError("arguments must be a dict")
+        if arguments.keys() - {"experiment_dir", "include_diagnostics"}:
+            raise ValueError("unsupported evidence tool arguments")
+        include_diagnostics = arguments.get("include_diagnostics", False)
+        if type(include_diagnostics) is not bool:
+            raise TypeError("include_diagnostics must be a boolean")
+        experiment_dir = arguments.get("experiment_dir")
+        if not isinstance(experiment_dir, str):
+            raise TypeError("experiment_dir must be a string")
+        if not experiment_dir.strip():
+            raise ValueError("experiment_dir must not be empty or whitespace")
+        if Path(experiment_dir).resolve(strict=False) != self._experiment_dir:
+            raise ValueError("experiment_dir must match the host-bound experiment")
+        return analyze_experiment_evidence(
+            str(self._experiment_dir),
+            config_paths=self._config_paths,
+            test_metrics_file=self._test_metrics_file,
+            test_metric_specs=self._test_metric_specs,
+            metrics_config=self._metrics_config,
+            include_diagnostics=include_diagnostics,
+        )
 
 
 def compare_experiments(
