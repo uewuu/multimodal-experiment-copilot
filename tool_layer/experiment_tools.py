@@ -1,6 +1,6 @@
 """单实验分析 Tool Layer。"""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 import json
@@ -12,6 +12,7 @@ from compare_experiments import (
     find_experiment_dirs,
 )
 from generate_report import resolve_experiment_paths
+import experiment_comparison
 from metrics import MetricSpec
 from read_config import read_config_evidence
 from read_metrics_config import read_metric_specs_config
@@ -278,6 +279,131 @@ class ExperimentEvidenceTools:
             test_metric_specs=self._test_metric_specs,
             metrics_config=self._metrics_config,
             include_diagnostics=include_diagnostics,
+        )
+
+
+@dataclass(frozen=True, slots=True, init=False, eq=False, repr=False)
+class ExperimentComparisonTools:
+    """Explicit comparison binding for one ordered pair of experiment roots.
+
+    Formal Session authorization remains upstream of dispatch. This binding
+    checks both identities before either composition, and keeps host metadata
+    separate from file evidence. Only the frozen core interprets comparisons.
+    """
+
+    _experiment_a: Path
+    _experiment_b: Path
+    _options_a: dict
+    _options_b: dict
+    _targets: Sequence[Mapping]
+
+    def __init__(
+        self,
+        experiment_a: str,
+        experiment_b: str,
+        *,
+        options_a: Mapping | None = None,
+        options_b: Mapping | None = None,
+        targets: Sequence[Mapping],
+    ) -> None:
+        for label, value, options in (
+            ("a", experiment_a, options_a), ("b", experiment_b, options_b),
+        ):
+            self._validate_directory_argument(value)
+            root = Path(value).resolve(strict=True)
+            if not root.is_dir():
+                raise NotADirectoryError("bound experiment must be a directory")
+            if options is None:
+                options = {}
+            if not isinstance(options, Mapping):
+                raise TypeError("evidence options must be a mapping or None")
+            if options.keys() - {
+                "config_paths", "test_metrics_file", "test_metric_specs", "metrics_config",
+            }:
+                raise ValueError("unsupported comparison evidence options")
+            object.__setattr__(self, "_experiment_" + label, root)
+            object.__setattr__(self, "_options_" + label, deepcopy(dict(options)))
+        if (isinstance(targets, (str, bytes, bytearray))
+                or not isinstance(targets, Sequence)):
+            raise TypeError("targets must be a sequence")
+        object.__setattr__(self, "_targets", deepcopy(targets))
+
+    @staticmethod
+    def _validate_directory_argument(value: object) -> None:
+        if not isinstance(value, str):
+            raise TypeError("experiment directory must be a string")
+        if not value.strip():
+            raise ValueError("experiment directory must not be empty or whitespace")
+
+    def list_tools(self) -> list[dict]:
+        """Return an independent schema without host-only declarations."""
+        return [{
+            "type": "function",
+            "function": {
+                "name": "compare_experiment_evidence",
+                "description": (
+                    "Compare selected evidence for the host-bound ordered experiment "
+                    "pair. Report numerical differences with comparability and "
+                    "provenance limits; no checkpoint verification is implied."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "experiment_a": {"type": "string"},
+                        "experiment_b": {"type": "string"},
+                    },
+                    "required": ["experiment_a", "experiment_b"],
+                    "additionalProperties": False,
+                },
+            },
+        }]
+
+    @staticmethod
+    def _supplement_validation_specs(targets, label, root, options) -> None:
+        """Supplement detached declarations from a contained host-selected config.
+
+        No default metric semantics are inferred and no M16 result is modified.
+        The existing config reader and M16 child-path checks remain authoritative.
+        """
+        selected = [target[label] for target in targets
+                    if target[label]["section"] == "validation"
+                    and target[label]["metric_spec"] is None]
+        config = options.get("metrics_config")
+        if not selected or config is None:
+            return
+        path, _ = _evidence_file(root, config)
+        specs = {spec.name: spec for spec in read_metric_specs_config(path)}
+        for side in selected:
+            side["metric_spec"] = specs.get(side["metric_name"])
+
+    def invoke_tool(self, tool_name: str, arguments: dict) -> dict:
+        """Validate the ordered pair, compose both sides, then call the core."""
+        if not isinstance(tool_name, str):
+            raise TypeError("tool_name must be a string")
+        if not tool_name.strip():
+            raise ValueError("tool_name must not be empty or whitespace")
+        if tool_name != "compare_experiment_evidence":
+            raise KeyError("unknown comparison tool")
+        if type(arguments) is not dict:
+            raise TypeError("arguments must be a dict")
+        if arguments.keys() != {"experiment_a", "experiment_b"}:
+            raise ValueError("comparison requires only experiment_a and experiment_b")
+        for key, bound in (
+            ("experiment_a", self._experiment_a), ("experiment_b", self._experiment_b),
+        ):
+            value = arguments[key]
+            self._validate_directory_argument(value)
+            if Path(value).resolve(strict=False) != bound:
+                raise ValueError("experiment pair must match the host-bound ordered pair")
+
+        options_a, options_b = deepcopy(self._options_a), deepcopy(self._options_b)
+        targets = deepcopy(self._targets)
+        evidence_a = analyze_experiment_evidence(str(self._experiment_a), **options_a)
+        evidence_b = analyze_experiment_evidence(str(self._experiment_b), **options_b)
+        self._supplement_validation_specs(targets, "a", self._experiment_a, options_a)
+        self._supplement_validation_specs(targets, "b", self._experiment_b, options_b)
+        return experiment_comparison.compare_experiment_evidence(
+            evidence_a, evidence_b, targets=targets,
         )
 
 
