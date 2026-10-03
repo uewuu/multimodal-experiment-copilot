@@ -1,23 +1,89 @@
 """Explicitly bound replicate aggregation over host-supplied memory snapshots."""
 
-from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+import json
 
 import experiment_replicates
+from experiment_identity import ExperimentIdentity, ExecutionIdentity, ExperimentProvenance
+from metrics import MetricSpec
 
 
 __all__ = ("ReplicateAggregationTools",)
 
 _TOOL_NAME = "aggregate_replicate_evidence"
+_SNAPSHOT_TYPES = (ExperimentIdentity, ExecutionIdentity, ExperimentProvenance, MetricSpec)
+_MAX_INPUT_BYTES = 2 * 1024 * 1024
+
+
+def _data_snapshot(envelope):
+    """Copy only the bounded data projection that the frozen core accepts.
+
+    Exact built-ins and approved, ordinary-field dataclasses have no caller
+    traversal protocols. Extra instance attributes are never inspected. Count
+    the compact UTF-8 input projection while copying, before unbounded work.
+    Scalar JSON encoding only measures size; it is not an object-copy mechanism.
+    """
+    used = 0
+    ancestors = set()
+
+    def charge(size):
+        nonlocal used
+        used += size
+        if used > _MAX_INPUT_BYTES:
+            raise ValueError("replicate input exceeds 2 MiB")
+
+    def scalar(value):
+        if type(value) is str and len(value) > _MAX_INPUT_BYTES:
+            raise ValueError("replicate input exceeds 2 MiB")
+        if type(value) is int and value.bit_length() > _MAX_INPUT_BYTES * 4:
+            raise ValueError("replicate input integer exceeds budget")
+        charge(len(json.dumps(value, ensure_ascii=False,
+                              separators=(",", ":")).encode("utf-8")))
+        return value
+
+    def visit(value, depth):
+        kind = type(value)
+        if value is None or kind in (str, int, float, bool):
+            # Nonfinite floats are data, not executable objects. Preserve them
+            # so the core can exclude invalid observations locally as contracted.
+            return scalar(value)
+        if kind not in (dict, list, tuple, *_SNAPSHOT_TYPES):
+            raise TypeError("snapshot requires exact data types and approved dataclasses")
+        if depth > 16 or id(value) in ancestors:
+            raise ValueError("input exceeds structure depth or contains a cycle")
+        ancestors.add(id(value))
+        try:
+            charge(2)
+            if kind in (list, tuple):
+                copied = []
+                for index, item in enumerate(value):
+                    charge(int(index > 0))
+                    copied.append(visit(item, depth + 1))
+                return tuple(copied) if kind is tuple else copied
+            entries = value.items() if kind is dict else (
+                (field.name, getattr(value, field.name)) for field in fields(value))
+            copied = {}
+            for index, (key, item) in enumerate(entries):
+                if type(key) is not str:
+                    raise TypeError("snapshot mapping keys must be strings")
+                charge(1 + int(index > 0))
+                scalar(key)
+                copied[key] = visit(item, depth + 1)
+            # Only constructors of the four approved project types can run.
+            return copied if kind is dict else kind(**copied)
+        finally:
+            ancestors.remove(id(value))
+
+    return visit(envelope, 1)
 
 
 @dataclass(frozen=True, slots=True, init=False, eq=False, repr=False)
 class ReplicateAggregationTools:
     """Keep a detached host snapshot and delegate aggregation to the core.
 
-    Construction validates before copying, rejecting custom/lazy objects without
-    invoking their copy hooks. No result is cached: every invocation uses the
-    frozen core with the bound data. Acquisition remains the host's responsibility.
+    Construction projects data before core validation. Each core call receives
+    an independent projection, keeping host, stored and delegated data isolated.
+    No result is cached. Acquisition remains the host's responsibility.
     """
 
     _executions: object
@@ -25,17 +91,19 @@ class ReplicateAggregationTools:
     _targets: object
 
     def __init__(self, executions, *, group_declaration, targets):
-        # The public core owns structural limits and declaration validation.
-        # Its bounded traversal rejects dynamic objects before deepcopy can
-        # dispatch any caller-defined copying behavior. Eligibility failures
-        # are valid evidence results and do not prevent binding a snapshot.
+        snapshot = _data_snapshot({
+            "executions": executions, "group_declaration": group_declaration, "targets": targets,
+        })
+        # Core validation receives its own safe copy too; it cannot expose or
+        # mutate the snapshot subsequently retained by this binding.
+        validation = _data_snapshot(snapshot)
         experiment_replicates.aggregate_replicate_evidence(
-            executions, group_declaration=group_declaration, targets=targets,
+            validation["executions"], group_declaration=validation["group_declaration"],
+            targets=validation["targets"],
         )
-        snapshot = deepcopy((executions, group_declaration, targets))
-        object.__setattr__(self, "_executions", snapshot[0])
-        object.__setattr__(self, "_group_declaration", snapshot[1])
-        object.__setattr__(self, "_targets", snapshot[2])
+        object.__setattr__(self, "_executions", snapshot["executions"])
+        object.__setattr__(self, "_group_declaration", snapshot["group_declaration"])
+        object.__setattr__(self, "_targets", snapshot["targets"])
 
     def list_tools(self) -> list[dict]:
         """Return a fresh schema exposing no host data or model parameters."""
@@ -66,8 +134,13 @@ class ReplicateAggregationTools:
             raise TypeError("arguments must be a dict")
         if arguments:
             raise ValueError("replicate aggregation accepts no model arguments")
+        invocation = _data_snapshot({
+            "executions": self._executions,
+            "group_declaration": self._group_declaration,
+            "targets": self._targets,
+        })
         return experiment_replicates.aggregate_replicate_evidence(
-            self._executions,
-            group_declaration=self._group_declaration,
-            targets=self._targets,
+            invocation["executions"],
+            group_declaration=invocation["group_declaration"],
+            targets=invocation["targets"],
         )
