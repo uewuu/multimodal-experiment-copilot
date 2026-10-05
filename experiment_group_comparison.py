@@ -4,7 +4,6 @@ M18 owns aggregation; M11 owns metric comparability. Agreement of supplied
 declarations neither verifies their provenance nor establishes independence.
 """
 
-from dataclasses import fields
 import json
 import math
 
@@ -16,7 +15,20 @@ from experiment_identity import (
 from metrics import MetricSpec
 
 
-_DATA_TYPES = (ExperimentIdentity, ExecutionIdentity, ExperimentProvenance, MetricSpec)
+# Fixed project declarations, never discovered through caller-controlled
+# instance or class dataclass metadata. Preserve declaration order for budgets.
+_DATA_FIELDS = (
+    (ExperimentIdentity, ("namespace", "experiment_id")),
+    (ExecutionIdentity, ("experiment", "execution_id")),
+    (ExperimentProvenance, (
+        "execution", "configuration_ref", "task", "target", "model_ref",
+        "dataset_version", "split_id", "source_revision",
+        "initialization_checkpoint_ref", "realized_seed", "environment_ref",
+        "location", "recorded_at",
+    )),
+    (MetricSpec, ("name", "path", "direction", "display_name", "precision")),
+)
+_DATA_TYPES = tuple(kind for kind, _ in _DATA_FIELDS)
 _GROUP_LIMIT = 2 * 1024 * 1024
 _MAPPING_LIMIT = 16 * 1024
 _TOTAL_LIMIT = 4 * 1024 * 1024
@@ -68,8 +80,11 @@ def _data_snapshot(value, *, limit, max_depth=16):
                     charge(int(index > 0))
                     copied.append(visit(child, depth + 1))
                 return tuple(copied) if kind is tuple else copied
-            entries = item.items() if kind is dict else (
-                (field.name, getattr(item, field.name)) for field in fields(item))
+            if kind is dict:
+                entries = item.items()
+            else:
+                names = next(names for allowed, names in _DATA_FIELDS if kind is allowed)
+                entries = ((name, getattr(item, name)) for name in names)
             copied = {}
             for index, (name, child) in enumerate(entries):
                 if type(name) is not str:
