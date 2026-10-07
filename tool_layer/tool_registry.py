@@ -134,6 +134,8 @@ def _workspace_paths_for_tool(
     # Private metadata for an opt-in tool, without default registration.
     if tool_name == "analyze_experiment_evidence":
         return (_WorkspacePathCapability("experiment_dir", "directory"),)
+    if tool_name == "observe_artifact":
+        return (_WorkspacePathCapability("experiment_dir", "directory"),)
     if tool_name == "compare_experiment_evidence":
         return (
             _WorkspacePathCapability("experiment_a", "directory"),
