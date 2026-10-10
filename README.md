@@ -17,6 +17,8 @@ It is not a generic ChatGPT wrapper, and it is not limited to one dataset or tas
 
 ## Current capabilities
 
+- Explicitly bind evidence analysis (M16), two-experiment evidence comparison (M17), replicate aggregation (M18), unpaired group comparison (M19), host-reported artifact descriptor comparison (M20), bounded native artifact observation (M21), or explicitly paired replicate comparison (M22).
+- Keep expected rosters, target mappings, pairing and artifact selection under host control. Advanced tools remain opt-in; the default Registry exposes exactly `analyze_experiment` and `compare_experiments`.
 - Read `hparams.yaml` configurations and `history.json` metric histories.
 - Evaluate built-in or YAML-configured metrics with maximize/minimize semantics.
 - Analyze one experiment or compare and rank multiple experiments.
@@ -110,6 +112,8 @@ The demo:
 See the checked-in representative result at [`examples/deterministic_copilot_demo_output.json`](examples/deterministic_copilot_demo_output.json).
 
 ## Installation
+
+The V1 delivery target is a **source-based Python 3.11 release**. Run from a clone of this repository; editable installation, wheels and PyPI delivery are not currently supported. M23 integration work is in progress: implementation freeze, remote synchronization, release acceptance and publication are separate states. `v0.2.0` is only a candidate version; no V1 release is declared here.
 
 Install the project, analysis, HTTP, and test dependencies:
 
@@ -353,19 +357,51 @@ FI is an example workload, not a product specialization. The fixture does not in
 
 ## Testing and status
 
-The current verified baseline is:
+M23 Slice 2 verification distinguishes collection from execution:
 
 ```text
-2026 passed
+Full collection: 86 files / 4647 node IDs
+Demo and safety contracts: 41 PASS
+Full M23 contracts: 71 collected / 41 PASS / 30 expected Runner FAIL
+Specified frozen regressions: 2276 PASS (independent suite processes)
 ```
 
-Run the complete suite with:
+The 30 failures are ordinary failures for the not-yet-implemented release runner. They are not skips or xfails. These results do not claim that all 4647 tests passed.
+
+Inspect collection or run the completed demo contracts:
 
 ```bash
-python -m pytest ./tests -q
+python -B -m pytest -p no:cacheprovider --collect-only -q tests
+python -B -m pytest -p no:cacheprovider -q tests/test_v1_bound_demo_contract.py tests/test_v1_release_safety_contract.py
 ```
 
-GitHub Actions validates pull requests and pushes to `main` on Python 3.11. A known third-party Starlette/httpx deprecation warning may appear; it is not a product test failure.
+The existing GitHub Actions workflow uses Ubuntu/Python 3.11 and a combined test invocation. It is not evidence of Windows native or isolated release acceptance. Runner, CI correction, fresh installation, Windows full regression and Linux portable acceptance remain Slice 3 work. See [testing and release evidence](docs/v1_testing_release.md) for exact scope and commands. A known Starlette/httpx deprecation warning may appear.
+
+## V1 offline workflows
+
+Run each scenario independently, without credentials or network access:
+
+```bash
+python examples/v1_bound_workflows_demo.py --scenario A
+python examples/v1_bound_workflows_demo.py --scenario B
+python examples/v1_bound_workflows_demo.py --scenario C
+python examples/v1_bound_workflows_demo.py --scenario D
+python examples/v1_bound_workflows_demo.py --scenario E
+python examples/v1_bound_workflows_demo.py --scenario F
+python examples/v1_bound_workflows_demo.py --scenario G
+```
+
+Only the provider is fake. Each scenario traverses the real Session, Adapter, explicitly bound Tool and Core. A/B/G prepare temporary files; C–F use in-memory host snapshots. Output is one strict JSON object containing the actual tool report, grounded facts, limitations and runtime counts. E demonstrates explicit crossed pairing with deltas `[6, -1]`, mean `2.5`; D reports an unpaired group mean difference.
+
+A–F use portable interfaces; Linux acceptance still needs the separate Slice 3 run. G requires Windows/local NTFS and uses the real M21 Reader. Unsupported platforms return `unsupported` with exit code 3, without a fabricated digest. M21 observes one file of at most 1 MiB, with best-effort change detection; it does not verify producer provenance, checkpoint binding, latest/current status or an atomic snapshot. Older YAML/history readers do not share this uniform byte bound.
+
+### Documentation
+
+- [Quickstart and output guide](docs/v1_quickstart.md)
+- [Python API reference](docs/v1_api_reference.md)
+- [Architecture and workflow selection](docs/v1_architecture.md)
+- [Security, trust and platform limits](docs/v1_security.md)
+- [Testing and release status](docs/v1_testing_release.md)
 
 ## Current limitations
 
