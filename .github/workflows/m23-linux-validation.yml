@@ -1,0 +1,100 @@
+name: M23 Linux Portable Validation
+
+on:
+  push:
+    branches:
+      - validation/m23-linux-portable-20261010
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+
+jobs:
+  linux-portable:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Source byte identity and Linux platform
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, platform, sys
+          expected = {'.github/workflows/tests.yml': 'f808d6fc3680fe5f97f6b62c3d5df9a9d2f3fd48a513824f90948d7a171b8d57', 'README.md': '48495baba38471816854179f817d272d1ef570b7a40f9ad01071a26c73690ebb', 'constraints-release-py311.txt': 'd2a10044c69e7d71987b07607ef593fd9bba68e22668d0b3d7a0b914e4d02776', 'docs/v1_quickstart.md': '3b9fd8e8b8205dabb509d03f929f8283ced62f7023ac1485c40e176c05c70ece', 'docs/v1_testing_release.md': '9420d96fb12d82dc8baa9e542965b48993eda4dc15a989ef1a55668b802430bb', 'scripts/release-portable-files.json': '3094f89a1f93afd1a648b2c15abe9b5cae0497fb1c1b61b41d3f3a0d642f0a4b', 'scripts/run_release_checks.py': '51d960892d4c9974bc92f55216739fb2fd9bb0570d809d48dae8266d90a0b333'}
+          actual = {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in expected}
+          assert actual == expected, 'source fingerprint mismatch'
+          assert platform.system() == 'Linux' and sys.version_info[:2] == (3, 11)
+          assert os.environ['RUNNER_OS'] == 'Linux'
+          evidence = dict(head_sha=os.environ['GITHUB_SHA'], runner_os=os.environ['RUNNER_OS'],
+                          system=platform.system(), machine=platform.machine(), python=sys.version,
+                          source_sha256=actual,
+                          source_manifest_sha256='0895cdec9b675e000570778eebfaa73fc4bb949063005420dddb570b2399bfc5')
+          pathlib.Path('validation-platform.json').write_text(json.dumps(evidence, sort_keys=True), encoding='utf8')
+          print(json.dumps(evidence, sort_keys=True))
+      - name: Install tested base dependencies only
+        run: python -m pip install -c constraints-release-py311.txt -r requirements.txt
+      - name: Dependency evidence
+        shell: python
+        run: |
+          import importlib.metadata, importlib.util, json, pathlib, subprocess, sys
+          subprocess.run([sys.executable, '-m', 'pip', 'check'], check=True)
+          assert importlib.util.find_spec('openai') is None, 'default validation must be SDK-free'
+          versions = {d.metadata['Name']: d.version for d in importlib.metadata.distributions()}
+          pathlib.Path('validation-dependencies.json').write_text(json.dumps(versions, sort_keys=True), encoding='utf8')
+          print(json.dumps(versions, sort_keys=True))
+      - name: Actual isolated Linux portable tests
+        run: python -B scripts/run_release_checks.py --lane portable --test-list scripts/release-portable-files.json > linux-portable.json
+      - name: Independently reconcile exact terminal IDs
+        shell: python
+        run: |
+          import collections, json, pathlib
+          report = json.loads(pathlib.Path('linux-portable.json').read_text(encoding='utf8'))
+          assert report['status'] == 'passed' and report['platform'] == 'linux' and report['coverage_complete']
+          selected = json.loads(pathlib.Path('scripts/release-portable-files.json').read_text(encoding='utf8'))
+          assert report['selected_files'] == sorted(selected)
+          ids = [report[k] for k in ['collection_node_ids', 'per_file_collection_node_ids', 'executed_node_ids']]
+          assert all(len(x) == len(set(x)) for x in ids)
+          assert collections.Counter(ids[0]) == collections.Counter(ids[1]) == collections.Counter(ids[2])
+          assert all(row['exit_code'] == 0 for row in report['files'])
+          assert all(report['counts'][k] == 0 for k in ['failed', 'errors', 'skipped', 'xfailed', 'xpassed'])
+          print(json.dumps(dict(files=len(selected), collected=report['collection_total'],
+                               executed=report['executed_total'], counts=report['counts'], coverage='COMPLETE')))
+      - name: Real offline demos and unsupported G
+        shell: python
+        run: |
+          import json, pathlib, subprocess, sys
+          sys.path.insert(0, str(pathlib.Path('tests').resolve()))
+          from m23_release_contract_helpers import assert_demo
+          outcomes = []
+          for scenario in ['existing'] + list('ABCDEFG'):
+              args = ['examples/deterministic_copilot_demo.py'] if scenario == 'existing' else ['examples/v1_bound_workflows_demo.py', '--scenario', scenario]
+              child = subprocess.run([sys.executable, '-B', *args], capture_output=True, text=True, timeout=60)
+              value = json.loads(child.stdout)
+              if scenario == 'G':
+                  assert child.returncode == 3 and value['status'] == 'unsupported'
+                  assert value['facts']['status'] == 'unsupported_platform' and not value['facts'].get('sha256')
+              else:
+                  assert child.returncode == 0, (scenario, child.returncode, child.stderr)
+                  if scenario != 'existing':
+                      assert_demo(value, scenario)
+              outcomes.append(dict(scenario=scenario, exit_code=child.returncode, report=value))
+          pathlib.Path('validation-demos.json').write_text(json.dumps(outcomes, sort_keys=True), encoding='utf8')
+          print(json.dumps([dict(scenario=x['scenario'], exit_code=x['exit_code']) for x in outcomes]))
+      - name: Preserve machine evidence in Actions logs
+        if: always()
+        shell: python
+        run: |
+          import pathlib
+          for name in ['validation-platform.json', 'validation-dependencies.json', 'linux-portable.json', 'validation-demos.json']:
+              path = pathlib.Path(name)
+              print('M23_EVIDENCE_BEGIN ' + name)
+              print(path.read_text(encoding='utf8') if path.is_file() else 'MISSING_REPORT')
+              print('M23_EVIDENCE_END ' + name)

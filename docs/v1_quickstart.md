@@ -1,6 +1,6 @@
 # V1 source quickstart
 
-Use Python 3.11 and run from the repository root. This is source delivery; there is no supported `pip install -e .`, wheel or PyPI package. Fresh-environment validation is still a Slice 3 gate. The commands below describe the existing files and entry points; they are not a claim that a clean installation has been accepted.
+Use Python 3.11 and run from the repository root. This is source delivery; there is no supported `pip install -e .`, wheel or PyPI package. A fresh Windows Python 3.11.15 venv with the release constraints passed dependency installation, imports and the existing plus A-G demos. Linux execution and release acceptance remain pending; see [testing evidence](v1_testing_release.md).
 
 ## Get the source and dependencies
 
@@ -16,7 +16,7 @@ Windows PowerShell:
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -c constraints-release-py311.txt -r requirements.txt
 ```
 
 Linux shell:
@@ -24,13 +24,13 @@ Linux shell:
 ```bash
 python3.11 -m venv .venv
 . .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -c constraints-release-py311.txt -r requirements.txt
 ```
 
 The base requirements include PyYAML, pytest and the HTTP adapter dependencies. The demos need no API keys or provider SDK. Only for real OpenAI-compatible provider use:
 
 ```bash
-python -m pip install -r requirements-openai.txt
+python -m pip install -c constraints-release-py311.txt -r requirements-openai.txt
 ```
 
 The real provider may receive prompts and tool results. Review [security](v1_security.md) before supplying private experiment data.

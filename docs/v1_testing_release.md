@@ -6,16 +6,24 @@
 | --- | --- | --- |
 | M23 planning, historical | 83 test files / 4576 collected node IDs | Collection inventory, not execution success |
 | Slice 1, historical | 86 files / 4647 collected; M23 71 collected, 11 PASS, 60 expected FAIL | Acceptance contracts frozen; 30 Demo and 30 Runner failures |
-| Slice 2, current work | Demo + safety: 41 PASS | Real bound workflows, native G, offline/authorization/rollback contracts |
+| Slice 2, historical | Demo + safety: 41 PASS | Real bound workflows, native G, offline/authorization/rollback contracts |
 | Slice 2, full M23 | 71 collected, 41 PASS, 30 expected FAIL | Remaining failures are exclusively missing Runner; unexpected/error/skip/xfail = 0 |
 | Slice 2, collection | 86 files / 4647 node IDs | Exact inventory preserved; no tests added or modified |
 | Slice 2, specified frozen regressions | 2276 PASS | Independent suite processes, listed below; not a full-repository execution claim |
+| Slice 3, Windows full | 86 files / 4647 collected / 4647 executed / 4647 PASS | Exact global/per-file/executed IDs match; no duplicate, extra or missing IDs |
+| Slice 3, M23 | 71 / 71 PASS | Runner implemented; remaining RED = 0 |
+| Slice 3, native Windows | 8 / 8 native tests PASS | Real safe-open/observation/authorization; local fixed NTFS |
+| Slice 3, fresh environment | Install, pip check, imports, existing demo and A-G PASS | Separate Python 3.11.15 venv, user site disabled, no global dependency changes |
+| Slice 3, fresh base full matrix | 86 files / 4647 collected / 4647 executed / 4647 PASS | SDK-free base dependencies; final CI configuration; exact G/F/E match |
+| Slice 3, portable command on Windows | 22 files / 1964 collected / executed / PASS | Local CLI/allowlist validation only; NOT Linux execution |
+| Slice 3, Linux | NOT VERIFIED | WSL reports the Linux subsystem is not installed; no local Linux execution |
+| Slice 3, CI | CONFIGURED; REMOTE EXECUTION PENDING | Windows full + explicit portable allowlist; no push or Actions run |
 
-The completed evidence was obtained on the existing Windows Python 3.11 environment. Initial sandbox restrictions prevented temporary-directory access; verification used permitted execution outside that sandbox. This is not a clean-environment installation result or CI acceptance.
+Slice 3 Windows evidence uses Python 3.11.15, pytest 8.3.4 and the exact dependency pins in `constraints-release-py311.txt`. The workspace and temporary volume were checked with `GetVolumePathNameW`, `GetVolumeInformationW` and `GetDriveTypeW`: both report NTFS and local fixed drive type 3. Native M21 tests actually executed; seam-only results are not substituted for them. The full run had zero FAIL/ERROR/SKIP/XFAIL/XPASS, collection failures, process failures or timeouts.
 
-The remaining 30 Runner cases are ordinary FAIL outcomes. They cover dynamic collection (1), corrupt/incomplete child evidence (19), non-pass outcomes (5), forbidden partial full-lane selection (1), portable scope reporting (1), stable reports (1), real child isolation (1), and setup/teardown outcome reconciliation (1). No skips or xfails hide missing delivery work.
+All 30 previously failing Runner contracts now pass. They cover dynamic collection (1), corrupt/incomplete child evidence (19), non-pass outcomes (5), forbidden partial full-lane selection (1), portable scope reporting (1), stable reports (1), real child isolation (1), and setup/teardown outcome reconciliation (1). A separate two-file parameterized temporary project also produced exact G/F/E equality for all four executed node IDs.
 
-## Reproduce completed checks
+## Runner and evidence commands
 
 From the source root, with Python 3.11 and documented dependencies:
 
@@ -23,9 +31,47 @@ From the source root, with Python 3.11 and documented dependencies:
 python -B -m pytest -p no:cacheprovider -q tests/test_v1_bound_demo_contract.py tests/test_v1_release_safety_contract.py
 python -B -m pytest -p no:cacheprovider -q tests/test_v1_bound_demo_contract.py tests/test_v1_release_runner_contract.py tests/test_v1_release_safety_contract.py
 python -B -m pytest -p no:cacheprovider --collect-only -q tests
+python -B scripts/run_release_checks.py --lane windows-full
+# Portable subset only; Linux execution is still NOT VERIFIED:
+python -B scripts/run_release_checks.py --lane portable --test-list scripts/release-portable-files.json
 ```
 
-The second command currently exits nonzero for the expected Runner failures. The third command is collection only. A successful collection does not demonstrate that every test passed.
+The first two commands now pass. The third is collection only, never execution evidence. Full acceptance uses the Runner. JSON goes to stdout; pytest diagnostics, warnings and a summary go to stderr. Redirect both streams to an explicitly chosen directory outside the checkout when retaining evidence; PowerShell 5 redirection produces UTF-16, whereas Python UTF-8 writers and modern shells can produce UTF-8. Do not commit reports or virtual environments.
+
+`run_checks(root, *, lane, test_files=None)` uses the current interpreter for one global collection and one execution subprocess per selected file. `windows-full` discovers `tests/**/test_*.py` dynamically and refuses selection overrides. `portable` requires explicit files (`--test-list` JSON or repeated `--test-file`) and records every exclusion. Stable JSON includes all three ID lists, per-file exits/outcomes, counts, environment and reason codes. Exit 0 means passed; 1 means blocked; invalid CLI arguments return 2.
+
+Children use `-B`, `PYTHONDONTWRITEBYTECODE=1`, disabled pytest cache/plugin autoload, no shell and no retry. Each child has a 300-second subprocess timeout. Timeout/interruption blocks acceptance; subprocess cleanup handles the immediate child. This is not a guarantee of preempting arbitrary descendant processes or blocking filesystem I/O. Setup/teardown failures collapse to one terminal error per node. Every non-pass outcome blocks acceptance. Diagnostics are preserved separately rather than parsed as test-count evidence.
+
+### Portable selection rationale
+
+`scripts/release-portable-files.json` explicitly selects 22 files (64 others excluded from this lane). It covers M11/M17-M20/M22 pure-memory analysis and snapshot safety, Session/Runtime/Adapter, CLI/HTTP, the existing demo, A-F, and G's unsupported-platform behavior. The M21 I/O file exercises controlled native seams and unsupported-platform rejection; it is not native Linux safe-open acceptance.
+
+Windows-only native acceptance is excluded. Runner contracts that deliberately assert successful `windows-full` operation are excluded from Linux. Other files remain covered by Windows full acceptance and are not certified by this deliberately narrower portable list. No failing test was removed from Windows full selection. Linux CI additionally invokes real G on Linux and requires exit 3, `unsupported_platform`, and no successful digest. Until that job actually runs, this is a source-reviewed configuration, not Linux Portable PASS.
+
+### Fresh environment and dependency reproduction
+
+Use an isolated Python 3.11 venv. Two new environments outside the checkout were verified: base dependencies only, and base plus optional OpenAI. Both had `sys.prefix != sys.base_prefix`, `include-system-site-packages = false` and `site.ENABLE_USER_SITE = false`. The interpreter came from agent311, but its installed packages were not inherited or changed. Both installs used pip 24.0 and passed imports, pip check and all eight demo commands. The final base-only environment also passed the complete 4647-test matrix. Optional OpenAI was checked for import compatibility only; no real provider was called. Default CI installs only base dependencies.
+
+Windows PowerShell (choose a new temporary path):
+
+```powershell
+$releaseVenv = Join-Path $env:TEMP ('copilot-release-' + [guid]::NewGuid().ToString('N'))
+python -m venv $releaseVenv
+& "$releaseVenv\Scripts\python.exe" -m pip install -c constraints-release-py311.txt -r requirements.txt
+& "$releaseVenv\Scripts\python.exe" -m pip check
+& "$releaseVenv\Scripts\python.exe" -B examples/deterministic_copilot_demo.py
+foreach ($scenario in 'A','B','C','D','E','F','G') {
+    & "$releaseVenv\Scripts\python.exe" -B examples/v1_bound_workflows_demo.py --scenario $scenario
+    if ($LASTEXITCODE -ne 0) { throw "Demo failed: $scenario" }
+}
+& "$releaseVenv\Scripts\python.exe" -B scripts/run_release_checks.py --lane windows-full
+```
+
+The installed direct combination is PyYAML 6.0.3, pytest 8.3.4, FastAPI 0.141.1, Pydantic 2.13.5, httpx 0.28.1, Starlette 1.6.0 and optional openai 2.54.0. The constraints also record their resolved dependencies. `pip check` reported no broken requirements; base imports and all eight demo commands passed. Pins are a tested Windows combination, not a cross-platform lock or package-authenticity guarantee. The known Starlette/httpx deprecation warning remains visible; no dependency upgrade was used to suppress it.
+
+Optional SDK installation remains a separate command: `python -m pip install -c constraints-release-py311.txt -r requirements-openai.txt`. The constraints file alone does not install the SDK. An intermediate full run detected that the initial CI edit included optional SDK installation (4646 PASS / 1 FAIL in the frozen SDK-free CI contract). That CI configuration was corrected without modifying the frozen test; its 79-test file and the final fresh-base full matrix passed. The failing run remains diagnostic evidence, not final acceptance.
+
+## Historical specified regression commands
 
 Run each regression command as a separate process, especially Adapter. These are the exact specified suites, not an implicit full-repository selection:
 
@@ -52,15 +98,15 @@ python -B -m pytest -p no:cacheprovider -q tests/test_copilot_runtime_observabil
 | Runtime observability | 99 |
 | Total | 2276 |
 
-The known Starlette/httpx deprecation warning appears during HTTP-related collection/testing. It is retained in evidence; changing dependency constraints is outside Slice 2.
+These Slice 2 suite totals remain historical evidence. Slice 3 uses the dynamically discovered full repository instead of treating this 2276-test subset as full coverage.
 
 ## Remaining release gates
 
-Slice 3 must implement and validate the release Runner, correct CI orchestration, install dependencies in fresh environments, execute Windows native full regression, execute an explicit Linux portable subset and record resolved dependency versions. None of those steps is certified by the tables above.
+Slice 3 remains BLOCKED by the frozen acceptance matrix's actual Linux portable execution gate. Windows full execution, exact node reconciliation, native NTFS checks, fresh installation/import/demo validation and dependency recording have evidence. Linux is NOT VERIFIED. No Slice 3 freeze commit has been created.
 
-The frozen acceptance design requires dynamic discovery, exact collected/executed node-ID reconciliation and one execution subprocess per test file using the current interpreter. Missing/duplicate/extra IDs, malformed child reports, errors, skips, xfails or xpasses must block full acceptance. A partial portable lane must list exclusions and cannot claim Windows native acceptance. These are future implementation requirements; `scripts/run_release_checks.py` is not implemented in Slice 2.
+The acceptance matrix remains defined in the unchanged `tests/m23_release_contract_helpers.py`. Functional/offline/integration and the Windows coverage/isolation/native gates have local evidence. Linux remains pending; independent exact-SHA RC review, Git main integration, final version authorization, tag and release publication are also pending. Implementation, remote synchronization, acceptance and publication are separate states.
 
-The existing Ubuntu workflow runs a combined suite. Its presence is not Windows acceptance or proof of test-file isolation. Linux has no accepted M21 POSIX safe-open backend; explicit unsupported behavior is distinct from native success.
+The updated workflow installs constrained dependencies on Windows and Linux. Windows probes workspace and temporary filesystems, fails closed unless both are local NTFS, runs the full Runner and checks that real native test outcomes exist and all passed. Linux uses only the explicit allowlist and a real unsupported-platform check. YAML/embedded Python syntax and Windows environment probing were checked locally. Remote GitHub Actions has NOT RUN; workflow configuration does not imply CI GREEN. Linux has no accepted M21 POSIX safe-open backend.
 
 Subsequent independent review must bind evidence to the exact release candidate SHA and cumulative scope. Remote synchronization and any merge/tag/PR/Release require their separately authorized gates. No remote or release action is performed by the demos.
 
