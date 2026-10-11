@@ -16,8 +16,8 @@
 | Slice 3, fresh environment | Install, pip check, imports, existing demo and A-G PASS | Separate Python 3.11.15 venv, user site disabled, no global dependency changes |
 | Slice 3, fresh base full matrix | 86 files / 4647 collected / 4647 executed / 4647 PASS | SDK-free base dependencies; final CI configuration; exact G/F/E match |
 | Slice 3, portable command on Windows | 22 files / 1964 collected / executed / PASS | Local CLI/allowlist validation only; NOT Linux execution |
-| Slice 3, Linux | NOT VERIFIED | WSL reports the Linux subsystem is not installed; no local Linux execution |
-| Slice 3, CI | CONFIGURED; REMOTE EXECUTION PENDING | Windows full + explicit portable allowlist; no push or Actions run |
+| Slice 3, Linux | 22 files / 1964 collected / 1964 executed / 1964 PASS | Actual Ubuntu 24.04 / Python 3.11.17; exact G/F/E; all non-pass counts zero |
+| Slice 3, CI | Temporary Linux validation SUCCESS | Run 38114641921; remote Windows CI remains pending |
 
 Slice 3 Windows evidence uses Python 3.11.15, pytest 8.3.4 and the exact dependency pins in `constraints-release-py311.txt`. The workspace and temporary volume were checked with `GetVolumePathNameW`, `GetVolumeInformationW` and `GetDriveTypeW`: both report NTFS and local fixed drive type 3. Native M21 tests actually executed; seam-only results are not substituted for them. The full run had zero FAIL/ERROR/SKIP/XFAIL/XPASS, collection failures, process failures or timeouts.
 
@@ -32,7 +32,7 @@ python -B -m pytest -p no:cacheprovider -q tests/test_v1_bound_demo_contract.py 
 python -B -m pytest -p no:cacheprovider -q tests/test_v1_bound_demo_contract.py tests/test_v1_release_runner_contract.py tests/test_v1_release_safety_contract.py
 python -B -m pytest -p no:cacheprovider --collect-only -q tests
 python -B scripts/run_release_checks.py --lane windows-full
-# Portable subset only; Linux execution is still NOT VERIFIED:
+# Portable subset only; actual Ubuntu execution verified separately:
 python -B scripts/run_release_checks.py --lane portable --test-list scripts/release-portable-files.json
 ```
 
@@ -46,7 +46,17 @@ Children use `-B`, `PYTHONDONTWRITEBYTECODE=1`, disabled pytest cache/plugin aut
 
 `scripts/release-portable-files.json` explicitly selects 22 files (64 others excluded from this lane). It covers M11/M17-M20/M22 pure-memory analysis and snapshot safety, Session/Runtime/Adapter, CLI/HTTP, the existing demo, A-F, and G's unsupported-platform behavior. The M21 I/O file exercises controlled native seams and unsupported-platform rejection; it is not native Linux safe-open acceptance.
 
-Windows-only native acceptance is excluded. Runner contracts that deliberately assert successful `windows-full` operation are excluded from Linux. Other files remain covered by Windows full acceptance and are not certified by this deliberately narrower portable list. No failing test was removed from Windows full selection. Linux CI additionally invokes real G on Linux and requires exit 3, `unsupported_platform`, and no successful digest. Until that job actually runs, this is a source-reviewed configuration, not Linux Portable PASS.
+Windows-only native acceptance is excluded. Runner contracts that deliberately assert successful `windows-full` operation are excluded from Linux. Other files remain covered by Windows full acceptance and are not certified by this deliberately narrower portable list. No failing test was removed from Windows full selection. Linux CI additionally invokes real G on Linux and requires exit 3, `unsupported_platform`, and no successful digest. The temporary Ubuntu validation run passed this exact portable scope and G check; this is not full Linux repository or POSIX native-reader acceptance.
+
+### Actual GitHub Actions Linux evidence
+
+[Run 38114641921](https://github.com/uewuu/multimodal-experiment-copilot/actions/runs/38114641921), job `linux-portable` (114397003867), completed successfully on 2026-10-11. The temporary branch is `validation/m23-linux-portable-20261010`, commit `f64af88def71788fccd27e4e3391ae662c8cf441`, parent `015839f8cbb3779a95e2b6e5648b7b4feab16420`. The temporary workflow belongs only to that validation branch; it is not part of the formal Slice 3 delivery.
+
+The actual platform report records Linux / x86_64, Ubuntu 24.04 runner, Python 3.11.17, pytest 8.3.4 and pip 26.2.1. The base dependency versions match the release constraints (including FastAPI 0.141.1, Pydantic 2.13.5, httpx 0.28.1 and Starlette 1.6.0); the optional OpenAI SDK is absent. `pip check` passed. All 22 files ran in independent subprocesses: 1964 collected, 1964 executed and 1964 passed, with zero FAIL/ERROR/SKIP/XFAIL/XPASS or process/collection failures. Downloaded raw job logs supplied complete G/F/E node-ID lists, independently reconciled locally with no duplicates, extras or omissions.
+
+The same Ubuntu job executed the existing deterministic demo and A-F with exit 0 and checked their frozen golden facts. G returned exit 3, `unsupported_platform`, and no digest. The run's head SHA was verified through the REST API rather than inferred from a green checkmark.
+
+Source manifest SHA-256: `0895cdec9b675e000570778eebfaa73fc4bb949063005420dddb570b2399bfc5`. Before status-document updates, all seven original worktree file hashes exactly matched the temporary worktree, committed blobs and cloud-observed hashes, including original line endings. Runner, allowlist, constraints, formal CI configuration, frozen analysis code and tests remain unchanged after validation. Only README/Quickstart/testing-document evidence statements were subsequently updated; executable commands were preserved. Windows evidence is reused from its recorded runs, not described as newly executed Linux evidence.
 
 ### Fresh environment and dependency reproduction
 
@@ -102,11 +112,11 @@ These Slice 2 suite totals remain historical evidence. Slice 3 uses the dynamica
 
 ## Remaining release gates
 
-Slice 3 remains BLOCKED by the frozen acceptance matrix's actual Linux portable execution gate. Windows full execution, exact node reconciliation, native NTFS checks, fresh installation/import/demo validation and dependency recording have evidence. Linux is NOT VERIFIED. No Slice 3 freeze commit has been created.
+Slice 3 verification gates now have Windows full execution, exact node reconciliation, native NTFS checks, fresh installation/import/demo validation, dependency recording and actual Linux portable evidence. The formal M23 branch remains local; independent RC review and release acceptance are still required.
 
-The acceptance matrix remains defined in the unchanged `tests/m23_release_contract_helpers.py`. Functional/offline/integration and the Windows coverage/isolation/native gates have local evidence. Linux remains pending; independent exact-SHA RC review, Git main integration, final version authorization, tag and release publication are also pending. Implementation, remote synchronization, acceptance and publication are separate states.
+The acceptance matrix remains defined in the unchanged `tests/m23_release_contract_helpers.py`. Functional/offline/integration and the Windows coverage/isolation/native gates have local evidence; Linux portable has the specific cloud run above. Independent exact-SHA RC review, Git main integration, final version authorization, tag and release publication remain pending. Implementation, remote synchronization, acceptance and publication are separate states.
 
-The updated workflow installs constrained dependencies on Windows and Linux. Windows probes workspace and temporary filesystems, fails closed unless both are local NTFS, runs the full Runner and checks that real native test outcomes exist and all passed. Linux uses only the explicit allowlist and a real unsupported-platform check. YAML/embedded Python syntax and Windows environment probing were checked locally. Remote GitHub Actions has NOT RUN; workflow configuration does not imply CI GREEN. Linux has no accepted M21 POSIX safe-open backend.
+The updated formal workflow installs constrained dependencies on Windows and Linux. Windows probes workspace and temporary filesystems, fails closed unless both are local NTFS, runs the full Runner and checks that real native test outcomes exist and all passed. Linux uses only the explicit allowlist and a real unsupported-platform check. YAML/embedded Python syntax and Windows environment probing were checked locally. Only the temporary Linux workflow has remote execution evidence so far; remote execution of the formal workflow and Windows job remains pending. Linux has no accepted M21 POSIX safe-open backend.
 
 Subsequent independent review must bind evidence to the exact release candidate SHA and cumulative scope. Remote synchronization and any merge/tag/PR/Release require their separately authorized gates. No remote or release action is performed by the demos.
 

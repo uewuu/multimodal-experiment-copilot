@@ -1,6 +1,6 @@
 # V1 source quickstart
 
-Use Python 3.11 and run from the repository root. This is source delivery; there is no supported `pip install -e .`, wheel or PyPI package. A fresh Windows Python 3.11.15 venv with the release constraints passed dependency installation, imports and the existing plus A-G demos. Linux execution and release acceptance remain pending; see [testing evidence](v1_testing_release.md).
+Use Python 3.11 and run from the repository root. This is source delivery; there is no supported `pip install -e .`, wheel or PyPI package. A fresh Windows Python 3.11.15 venv with the release constraints passed dependency installation, imports and the existing plus A-G demos. Ubuntu 24.04 / Python 3.11.17 also passed the explicit portable subset, existing demo and A-F; G correctly reported unsupported. Release acceptance remains pending; see [testing evidence](v1_testing_release.md).
 
 ## Get the source and dependencies
 
@@ -67,7 +67,7 @@ python examples/v1_bound_workflows_demo.py --scenario G
 
 These values are computed or projected from real tool responses. The provider never supplies a replacement report. D and E happen to have equal summary values here, but E also retains individual pair endpoints, deltas, declared-pair coverage and unpaired members. No pairing is inferred from seeds or input order.
 
-G requires Windows with local NTFS temporary storage. It emits `unsupported` on unsupported platforms; this is not native success. Linux execution evidence remains pending. A/B/G write only their temporary fixture inputs before tool execution and clean them up afterwards. C–F do not acquire files, Memory records or network data.
+G requires Windows with local NTFS temporary storage. It emits `unsupported` on unsupported platforms; this is not native success. Ubuntu run 38114641921 verified G's exit code 3 and unsupported-platform JSON. A/B/G write only their temporary fixture inputs before tool execution and clean them up afterwards. C–F do not acquire files, Memory records or network data.
 
 ## Inspect output and exit codes
 

@@ -365,8 +365,8 @@ Exact global/per-file/executed node-ID reconciliation: COMPLETE
 M23 contracts: 71 / 71 PASS; remaining RED: 0
 M21 native Windows/local NTFS: 8 / 8 native tests PASS
 Fresh Python 3.11 venv: install/import/pip check and existing + A-G demos PASS
-Linux actual execution: NOT VERIFIED
-Remote CI: NOT RUN / PENDING
+Linux portable: 22 files / 1964 collected / 1964 executed / 1964 PASS
+Temporary Ubuntu CI: run 38114641921 SUCCESS; remote Windows CI still pending
 ```
 
 The full Windows run used one execution subprocess per test file. FAIL, ERROR, SKIP, XFAIL and XPASS were all zero. This evidence applies to Windows/local NTFS with the recorded dependencies; it does not establish Linux support or release completion.
@@ -376,11 +376,11 @@ From the source root with Python 3.11 and the tested dependency constraints:
 ```bash
 python -m pip install -c constraints-release-py311.txt -r requirements.txt
 python -B scripts/run_release_checks.py --lane windows-full > windows-full.json
-# Linux portable command; actual Linux acceptance is pending:
+# Linux portable subset only:
 python -B scripts/run_release_checks.py --lane portable --test-list scripts/release-portable-files.json > linux-portable.json
 ```
 
-GitHub Actions is configured for Windows full and an explicit 22-file Linux portable subset, including fail-closed unsupported-platform checks. Configuration is not remote execution evidence. Linux actual execution remains a Slice 3 blocker; the work is not frozen or released. See [testing and release evidence](docs/v1_testing_release.md) for exact scope, fresh-environment steps and report handling. The known Starlette/httpx deprecation warning is retained; dependencies were not upgraded to suppress it.
+GitHub Actions is configured for Windows full and an explicit 22-file Linux portable subset, including fail-closed unsupported-platform checks. [Temporary validation run 38114641921](https://github.com/uewuu/multimodal-experiment-copilot/actions/runs/38114641921) completed on Ubuntu 24.04 / Python 3.11.17 with exact node-ID coverage and all required portable tests passing. Remote Windows CI and release acceptance remain pending; the formal M23 branch has not been pushed or released. See [testing and release evidence](docs/v1_testing_release.md) for exact scope, fresh-environment steps and report handling. The known Starlette/httpx deprecation warning is retained; dependencies were not upgraded to suppress it.
 
 ## V1 offline workflows
 
@@ -398,7 +398,7 @@ python examples/v1_bound_workflows_demo.py --scenario G
 
 Only the provider is fake. Each scenario traverses the real Session, Adapter, explicitly bound Tool and Core. A/B/G prepare temporary files; C–F use in-memory host snapshots. Output is one strict JSON object containing the actual tool report, grounded facts, limitations and runtime counts. E demonstrates explicit crossed pairing with deltas `[6, -1]`, mean `2.5`; D reports an unpaired group mean difference.
 
-A–F use portable interfaces; Linux acceptance still needs the separate Slice 3 run. G requires Windows/local NTFS and uses the real M21 Reader. Unsupported platforms return `unsupported` with exit code 3, without a fabricated digest. M21 observes one file of at most 1 MiB, with best-effort change detection; it does not verify producer provenance, checkpoint binding, latest/current status or an atomic snapshot. Older YAML/history readers do not share this uniform byte bound.
+A–F passed the separate Ubuntu validation run. G requires Windows/local NTFS and uses the real M21 Reader. Unsupported platforms return `unsupported` with exit code 3, without a fabricated digest. M21 observes one file of at most 1 MiB, with best-effort change detection; it does not verify producer provenance, checkpoint binding, latest/current status or an atomic snapshot. Older YAML/history readers do not share this uniform byte bound.
 
 ### Documentation
 
