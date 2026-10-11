@@ -28,7 +28,7 @@ jobs:
         shell: python
         run: |
           import hashlib, json, os, pathlib, platform, sys
-          expected = {'.github/workflows/tests.yml': 'f808d6fc3680fe5f97f6b62c3d5df9a9d2f3fd48a513824f90948d7a171b8d57', 'README.md': '48495baba38471816854179f817d272d1ef570b7a40f9ad01071a26c73690ebb', 'constraints-release-py311.txt': 'd2a10044c69e7d71987b07607ef593fd9bba68e22668d0b3d7a0b914e4d02776', 'docs/v1_quickstart.md': '3b9fd8e8b8205dabb509d03f929f8283ced62f7023ac1485c40e176c05c70ece', 'docs/v1_testing_release.md': '9420d96fb12d82dc8baa9e542965b48993eda4dc15a989ef1a55668b802430bb', 'scripts/release-portable-files.json': '3094f89a1f93afd1a648b2c15abe9b5cae0497fb1c1b61b41d3f3a0d642f0a4b', 'scripts/run_release_checks.py': '51d960892d4c9974bc92f55216739fb2fd9bb0570d809d48dae8266d90a0b333'}
+          expected = {'.github/workflows/tests.yml': 'f808d6fc3680fe5f97f6b62c3d5df9a9d2f3fd48a513824f90948d7a171b8d57', 'README.md': 'b663a6fe353bd4d748aa6bc140501d73f6a5c10b329320a4d1d2cd8221112ad0', 'constraints-release-py311.txt': 'd2a10044c69e7d71987b07607ef593fd9bba68e22668d0b3d7a0b914e4d02776', 'docs/v1_quickstart.md': 'b7fdab7b61b987425d5f66c2d23c690dab9e367ee616c68b4188e301242952a7', 'docs/v1_testing_release.md': '8b2229356aed5585ecbaa7b8fc4f1e1e0ba6e534380a695185c917040bb96229', 'scripts/release-portable-files.json': '3094f89a1f93afd1a648b2c15abe9b5cae0497fb1c1b61b41d3f3a0d642f0a4b', 'scripts/run_release_checks.py': '51d960892d4c9974bc92f55216739fb2fd9bb0570d809d48dae8266d90a0b333'}
           actual = {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in expected}
           assert actual == expected, 'source fingerprint mismatch'
           assert platform.system() == 'Linux' and sys.version_info[:2] == (3, 11)
@@ -36,7 +36,7 @@ jobs:
           evidence = dict(head_sha=os.environ['GITHUB_SHA'], runner_os=os.environ['RUNNER_OS'],
                           system=platform.system(), machine=platform.machine(), python=sys.version,
                           source_sha256=actual,
-                          source_manifest_sha256='0895cdec9b675e000570778eebfaa73fc4bb949063005420dddb570b2399bfc5')
+                          source_manifest_sha256='8dcde70a7b5bdc16cd63f19e636533cd8240da8b4c93cef38572b820c1b7a286')
           pathlib.Path('validation-platform.json').write_text(json.dumps(evidence, sort_keys=True), encoding='utf8')
           print(json.dumps(evidence, sort_keys=True))
       - name: Install tested base dependencies only
