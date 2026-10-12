@@ -142,7 +142,7 @@ def _stable_comparison(result_json: str) -> dict:
 def build_demo_result() -> dict:
     """Run the real Copilot stack and return stable JSON-native output."""
     with TemporaryDirectory(prefix="experiment-copilot-demo-") as temp_dir:
-        experiment_root = Path(temp_dir)
+        experiment_root = Path(temp_dir).resolve(strict=True)
         _write_experiment(
             experiment_root / "baseline",
             model_name="linear_baseline",

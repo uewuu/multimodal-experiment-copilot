@@ -100,7 +100,7 @@ def _make_client(scenario):
 def _host_binding(scenario, stack):
     """Select one tool; create files only for A/B/G before tool execution."""
     if scenario in 'ABG':
-        workspace = Path(stack.enter_context(TemporaryDirectory(prefix='copilot-v1-')))
+        workspace = Path(stack.enter_context(TemporaryDirectory(prefix='copilot-v1-'))).resolve(strict=True)
         if scenario == 'A':
             root = fixtures.write_experiment(workspace, 'experiment', 2.0)
             return ExperimentEvidenceTools(str(root), **fixtures.evidence_options()), {'experiment_dir': str(root)}
