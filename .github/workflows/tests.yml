@@ -25,7 +25,7 @@ jobs:
         include:
           - os: windows-latest
             lane: windows-full
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             lane: portable
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
