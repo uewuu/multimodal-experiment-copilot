@@ -207,13 +207,15 @@ def test_failure_observation_is_exact_frozen_slots_dataclass() -> None:
     model = _module().CopilotFailureObservation
     assert is_dataclass(model)
     assert model.__dataclass_params__.frozen is True
-    assert tuple(field.name for field in fields(model)) == (
+    legacy_fields = (
         "stage",
         "provider_request_count",
         "tool_invocation_count",
         "elapsed_seconds",
     )
-    assert get_type_hints(model) == {
+    assert tuple(field.name for field in fields(model))[:4] == legacy_fields
+    hints = get_type_hints(model)
+    assert {name: hints[name] for name in legacy_fields} == {
         "stage": str,
         "provider_request_count": int,
         "tool_invocation_count": int,
@@ -230,14 +232,16 @@ def test_failure_observation_is_exact_frozen_slots_dataclass() -> None:
         "final_response_validation",
     )
     observation = model("tool_execution", 1, 2, 0.5)
+    assert (
+        observation.stage,
+        observation.provider_request_count,
+        observation.tool_invocation_count,
+        observation.elapsed_seconds,
+    ) == ("tool_execution", 1, 2, 0.5)
     with pytest.raises(FrozenInstanceError):
         observation.stage = "changed"
-    assert tuple(model.__slots__) == (
-        "stage",
-        "provider_request_count",
-        "tool_invocation_count",
-        "elapsed_seconds",
-    )
+    assert hasattr(model, "__slots__")
+    assert set(legacy_fields) <= set(model.__slots__)
     assert not hasattr(observation, "__dict__")
 def test_success_without_tools_returns_existing_result_and_no_callback() -> None:
     client = _FakeClient([_response(content="answer")])

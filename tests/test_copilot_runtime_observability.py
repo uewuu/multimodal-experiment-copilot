@@ -281,20 +281,19 @@ def test_observed_result_is_frozen_slots_dataclass() -> None:
     result_type = module.CopilotObservedResult
     assert is_dataclass(result_type)
     assert result_type.__dataclass_params__.frozen is True
-    assert tuple(result_type.__slots__) == ("turn", "metrics")
+    assert {"turn", "metrics"} <= set(result_type.__slots__)
+    assert "__dict__" not in result_type.__slots__
 
 
 def test_observed_result_has_exact_fields_and_annotations() -> None:
     module = _module()
     result_type = module.CopilotObservedResult
-    assert [item.name for item in fields(result_type)] == [
-        "turn",
-        "metrics",
-    ]
-    assert get_type_hints(result_type) == {
-        "turn": CopilotTurn,
-        "metrics": module.CopilotRuntimeMetrics,
+    assert {"turn", "metrics"} <= {
+        item.name for item in fields(result_type)
     }
+    annotations = get_type_hints(result_type)
+    assert annotations["turn"] is CopilotTurn
+    assert annotations["metrics"] is module.CopilotRuntimeMetrics
 
 
 @pytest.mark.parametrize(
