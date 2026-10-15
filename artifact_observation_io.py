@@ -18,6 +18,7 @@ _READ_ATTRIBUTES = 0x80
 _GENERIC_READ = 0x80000000
 _SHARE_READ = 1
 _OPEN_EXISTING = 3
+_DRIVE_FIXED = 3
 _BACKUP_SEMANTICS = 0x02000000
 _OPEN_REPARSE_POINT = 0x00200000
 _MAX_READ = 65536
@@ -248,8 +249,8 @@ class _WindowsNative:
         self._dll = dll
 
     def open(self, path, *, access, share, disposition, flags):
-        # Reject mapped network drives before attempting a file open.
-        if self._dll.GetDriveTypeW(path[:3]) not in (2, 3):
+        # Require a local fixed drive before attempting a file open.
+        if self._dll.GetDriveTypeW(path[:3]) != _DRIVE_FIXED:
             raise ObservationIOError('unsupported_platform')
         handle = self._dll.CreateFileW(path, access, share, None, disposition, flags, None)
         if handle == ctypes.c_void_p(-1).value:
@@ -282,7 +283,7 @@ class _WindowsNative:
             raise ctypes.WinError(ctypes.get_last_error())
         return dict(kind='directory' if info.attributes & 0x10 else 'file', reparse=False,
             final_path=path.value, filesystem=filesystem.value,
-            local=self._dll.GetDriveTypeW(final[:3]) in (2, 3), volume_id=info.volume,
+            local=self._dll.GetDriveTypeW(final[:3]) == _DRIVE_FIXED, volume_id=info.volume,
             file_id=(info.volume, (info.index_high << 32) | info.index_low),
             size=(info.size_high << 32) | info.size_low,
             mtime_ns=(basic.write - 116444736000000000) * 100, change_token=basic.change)

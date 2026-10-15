@@ -1,4 +1,4 @@
-"""Real Windows/local-NTFS acceptance. No skip, no mock standing in for native I/O."""
+"""Real Windows/local-NTFS acceptance plus explicitly controlled drive-type tests."""
 from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
@@ -156,3 +156,91 @@ def test_real_reader_no_generic_open_or_explicit_side_effects(monkeypatch, tmp_p
     assert calls == []
     assert_report(result)
     assert result['sha256'] == ABC_SHA
+
+
+class _DriveTypeProbe:
+    """Override one drive-type result; all other calls use the real Win32 DLL.
+
+    This is a controlled API test on a fixed NTFS fixture, not physical
+    removable-device acceptance. Track opens, reads and closes independently.
+    """
+
+    def __init__(self, dll, gate_index, drive_type):
+        self.dll = dll
+        self.gate_index = gate_index
+        self.drive_type = drive_type
+        self.drive_results = []
+        self.opened = []
+        self.closed = []
+        self.reads = []
+
+    def GetDriveTypeW(self, root):
+        value = self.drive_type if len(self.drive_results) == self.gate_index else 3
+        self.drive_results.append((root, value))
+        return value
+
+    def CreateFileW(self, *args):
+        handle = self.dll.CreateFileW(*args)
+        assert handle != ctypes.c_void_p(-1).value, ctypes.get_last_error()
+        self.opened.append(handle)
+        return handle
+
+    def ReadFile(self, *args):
+        self.reads.append(args[0])
+        return self.dll.ReadFile(*args)
+
+    def CloseHandle(self, handle):
+        self.closed.append(handle)
+        return self.dll.CloseHandle(handle)
+
+    def __getattr__(self, name):
+        return getattr(self.dll, name)
+
+
+@pytest.mark.parametrize('drive_type', [
+    pytest.param(0, id='unknown'),
+    pytest.param(1, id='no-root'),
+    pytest.param(2, id='removable'),
+    pytest.param(3, id='fixed'),
+    pytest.param(4, id='remote'),
+    pytest.param(5, id='cdrom'),
+    pytest.param(6, id='ramdisk'),
+])
+@pytest.mark.parametrize('gate_index, opened_before_rejection', [
+    pytest.param(0, 0, id='before-open'),
+    pytest.param(1, 1, id='root-final-path'),
+    pytest.param(3, 2, id='child-final-path'),
+])
+def test_native_fixed_drive_gate_before_content_read(
+        monkeypatch, tmp_path, gate_index, opened_before_rejection, drive_type):
+    backend = api('io')
+    reader = api('reader')
+    root = tmp_path.resolve(strict=True)
+    require_ntfs(root)
+    (root / 'artifact.bin').write_bytes(b'abc')
+    native = backend._WindowsNative()
+    probe = _DriveTypeProbe(native._dll, gate_index, drive_type)
+    monkeypatch.setattr(native, '_dll', probe)
+    monkeypatch.setattr(backend, '_native', native)
+    hashes = []
+    real_sha256 = reader.hashlib.sha256
+
+    def track_sha256(*args, **kwargs):
+        hashes.append(True)
+        return real_sha256(*args, **kwargs)
+
+    monkeypatch.setattr(reader.hashlib, 'sha256', track_sha256)
+    result = reader.observe_artifact(binding(str(root)))
+    assert probe.drive_results[gate_index][1] == drive_type
+    if drive_type == 3:
+        assert_report(result)
+        assert result['sha256'] == ABC_SHA and result['byte_size'] == 3
+        assert len(probe.opened) == 2
+        assert probe.reads == [probe.opened[1], probe.opened[1]]
+        assert len(hashes) == 1
+    else:
+        assert_report(result, 'unsupported_platform')
+        assert result['sha256'] is None and result['byte_size'] is None
+        assert len(probe.opened) == opened_before_rejection
+        assert probe.reads == [] and hashes == []
+    assert probe.closed == list(reversed(probe.opened))
