@@ -5,7 +5,6 @@ identity and metric policies; agreement of declarations verifies neither their
 truth nor independence. Missing observations never become numeric stand-ins.
 """
 
-from dataclasses import asdict, fields
 from itertools import combinations
 import json
 import math
@@ -29,7 +28,36 @@ _ROOT_LIMITATIONS = {
 }
 _INPUT_LIMIT = 2 * 1024 * 1024
 _OUTPUT_LIMIT = 128 * 1024
-_DATA_TYPES = (ExperimentIdentity, ExecutionIdentity, ExperimentProvenance, MetricSpec)
+# Fixed project declarations: caller instance/class dataclass metadata never
+# defines the snapshot schema or its byte-counting order.
+_DATA_FIELDS = (
+    (ExperimentIdentity, ("namespace", "experiment_id")),
+    (ExecutionIdentity, ("experiment", "execution_id")),
+    (ExperimentProvenance, (
+        "execution", "configuration_ref", "task", "target", "model_ref",
+        "dataset_version", "split_id", "source_revision",
+        "initialization_checkpoint_ref", "realized_seed", "environment_ref",
+        "location", "recorded_at",
+    )),
+    (MetricSpec, ("name", "path", "direction", "display_name", "precision")),
+)
+_DATA_TYPES = tuple(kind for kind, _ in _DATA_FIELDS)
+
+
+def _data_fields(value):
+    """Visit ordinary declared fields only after exact project-type approval."""
+    kind = type(value)
+    for allowed, names in _DATA_FIELDS:
+        if kind is allowed:
+            return ((name, object.__getattribute__(value, name)) for name in names)
+    raise TypeError("input requires an approved dataclass")
+
+
+def _execution_json(value):
+    """Project validated identity fields without dataclass traversal protocols."""
+    return {"experiment": {"namespace": value.experiment.namespace,
+                           "experiment_id": value.experiment.experiment_id},
+            "execution_id": value.execution_id}
 
 
 def _check_input_budget(envelope):
@@ -58,23 +86,22 @@ def _check_input_budget(envelope):
 
     def visit(value, depth):
         kind = type(value)
-        if value is None or kind in (str, bool, int, float):
+        if value is None or any(kind is allowed for allowed in (str, bool, int, float)):
             scalar(value)
             return
-        if kind not in (dict, list, tuple, *_DATA_TYPES):
+        if not any(kind is allowed for allowed in (dict, list, tuple, *_DATA_TYPES)):
             raise TypeError("input requires concrete JSON containers or known dataclasses")
         if depth > 16 or id(value) in ancestors:
             raise ValueError("input exceeds structure depth or contains a cycle")
         ancestors.add(id(value))
         try:
             charge(2)
-            if kind in (list, tuple):
+            if kind is list or kind is tuple:
                 for index, item in enumerate(value):
                     charge(int(index > 0))
                     visit(item, depth + 1)
             else:
-                entries = value.items() if kind is dict else (
-                    (field.name, getattr(value, field.name)) for field in fields(value))
+                entries = value.items() if kind is dict else _data_fields(value)
                 for index, (key, item) in enumerate(entries):
                     if type(key) is not str:
                         raise TypeError("input mapping keys must be strings")
@@ -164,12 +191,11 @@ def _validate(executions, group, targets):
             raise TypeError("provenance must be ExperimentProvenance")
         if provenance.execution != entry["execution"]:
             raise ValueError("snapshot and provenance execution must match")
-        for field in fields(provenance):
-            value = getattr(provenance, field.name)
-            if field.name == "realized_seed":
+        for name, value in _data_fields(provenance):
+            if name == "realized_seed":
                 _seed(value)
-            elif field.name != "execution":
-                _text(value, field.name, optional=True)
+            elif name != "execution":
+                _text(value, name, optional=True)
         _text(entry["training_protocol_ref"], "training_protocol_ref", optional=True)
         if entry["status"] not in ("available", "unavailable"):
             raise ValueError("invalid snapshot status")
@@ -224,7 +250,7 @@ def _assessment(status, reasons):
 
 
 def _member_reason(execution, reasons):
-    return {"execution": asdict(execution), "reason_codes": sorted(set(reasons))}
+    return {"execution": _execution_json(execution), "reason_codes": sorted(set(reasons))}
 
 
 def _group_assessment(group, roster, snapshots):
@@ -264,7 +290,7 @@ def _group_assessment(group, roster, snapshots):
         if seed is None:
             unknown += 1
         else:
-            seeds.setdefault(seed, []).append(asdict(entry["execution"]))
+            seeds.setdefault(seed, []).append(_execution_json(entry["execution"]))
             if expected is not None and expected != seed:
                 blocked = True
                 reasons.add("expected_seed_mismatch")
@@ -283,7 +309,9 @@ def _group_assessment(group, roster, snapshots):
         reasons.add("no_available_snapshots")
     status = "blocked" if blocked else "insufficient" if insufficient else "eligible"
     result = {
-        "group_id": group["group_id"], "experiment_identity": asdict(group["experiment_identity"]),
+        "group_id": group["group_id"], "experiment_identity": {
+            "namespace": group["experiment_identity"].namespace,
+            "experiment_id": group["experiment_identity"].experiment_id},
         "membership_source": "host_declared", "group_status": status,
         "identity_consistency": _assessment(identity_status, identity_reasons),
         "aggregation_eligibility": _assessment(status, reasons),
@@ -430,7 +458,7 @@ def _target(section, members, roster, snapshots, group, root_limitations):
         if state == "included" and (blocked or insufficient):
             state, codes = "excluded", reasons or {"aggregation_ineligible"}
         if state == "included":
-            included.append({"execution": asdict(execution), "value": observation["value"],
+            included.append({"execution": _execution_json(execution), "value": observation["value"],
                              "source": observation["source"]})
         else:
             (missing if state == "missing" else excluded).append(_member_reason(execution, codes))

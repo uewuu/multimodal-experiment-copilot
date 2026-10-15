@@ -1,17 +1,15 @@
 """Explicitly bound replicate aggregation over host-supplied memory snapshots."""
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 import json
 
 import experiment_replicates
-from experiment_identity import ExperimentIdentity, ExecutionIdentity, ExperimentProvenance
-from metrics import MetricSpec
 
 
 __all__ = ("ReplicateAggregationTools",)
 
 _TOOL_NAME = "aggregate_replicate_evidence"
-_SNAPSHOT_TYPES = (ExperimentIdentity, ExecutionIdentity, ExperimentProvenance, MetricSpec)
+_SNAPSHOT_TYPES = experiment_replicates._DATA_TYPES
 _MAX_INPUT_BYTES = 2 * 1024 * 1024
 
 
@@ -43,25 +41,25 @@ def _data_snapshot(envelope):
 
     def visit(value, depth):
         kind = type(value)
-        if value is None or kind in (str, int, float, bool):
+        if value is None or any(kind is allowed for allowed in (str, int, float, bool)):
             # Nonfinite floats are data, not executable objects. Preserve them
             # so the core can exclude invalid observations locally as contracted.
             return scalar(value)
-        if kind not in (dict, list, tuple, *_SNAPSHOT_TYPES):
+        if not any(kind is allowed for allowed in (dict, list, tuple, *_SNAPSHOT_TYPES)):
             raise TypeError("snapshot requires exact data types and approved dataclasses")
         if depth > 16 or id(value) in ancestors:
             raise ValueError("input exceeds structure depth or contains a cycle")
         ancestors.add(id(value))
         try:
             charge(2)
-            if kind in (list, tuple):
+            if kind is list or kind is tuple:
                 copied = []
                 for index, item in enumerate(value):
                     charge(int(index > 0))
                     copied.append(visit(item, depth + 1))
                 return tuple(copied) if kind is tuple else copied
-            entries = value.items() if kind is dict else (
-                (field.name, getattr(value, field.name)) for field in fields(value))
+            entries = (value.items() if kind is dict else
+                       experiment_replicates._data_fields(value))
             copied = {}
             for index, (key, item) in enumerate(entries):
                 if type(key) is not str:
