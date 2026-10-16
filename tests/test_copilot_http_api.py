@@ -210,7 +210,7 @@ def test_http_dependency_manifest_has_only_approved_direct_requirements() -> Non
     lines = REQUIREMENTS_PATH.read_text(encoding="utf-8").splitlines()
     assert lines == [
         "PyYAML>=6.0,<7",
-        "pytest>=8.0,<9",
+        "pytest>=9.0.3,<10",
         "fastapi>=0.116,<1",
         "pydantic>=2.11,<3",
         "httpx>=0.28,<1",
