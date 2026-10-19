@@ -315,6 +315,8 @@ Deploying it beyond a trusted environment requires a host application to supply 
 
 The **host**, not the model or HTTP caller, defines the trusted experiment workspace and server policy.
 
+Workspace authorization is separate from Python object-protocol safety. M16/M17 use the [Legacy Trusted-Host Python API (v1)](docs/v1_security.md#m16-m17-legacy-trusted-host-python-v1): the host reviews construction/copy/traversal protocols and stable input lifetimes; arbitrary custom objects have no zero-callback rejection or universal copy-isolation guarantee. M18/M19 retain their separate strict snapshot contracts. External custom hosts, plugins and SDK extensions are **NOT AUDITED / HOST RESPONSIBILITY**.
+
 - Tool path parameters are resolved against host-provided `experiment_context` capabilities.
 - Traversal, absolute paths outside the workspace, cross-drive paths, UNC/special Windows paths, and symlink/junction escapes are rejected.
 - `metrics_config` is governed by the same workspace boundary as experiment paths.

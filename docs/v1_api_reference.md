@@ -35,7 +35,7 @@ For a complete credential-free invocation use `run_scenario` in [the executable 
 
 ## Advanced Tools
 
-All classes below expose `list_tools() -> list[dict]` and `invoke_tool(tool_name, arguments) -> dict`. Construction freezes host selections; it does not grant Session path authority. Use the formal Adapter/Session path for model requests. Calling file Tools directly makes authorization the caller's responsibility.
+All classes below expose `list_tools() -> list[dict]` and `invoke_tool(tool_name, arguments) -> dict`. Construction binds host selections; it does not grant Session path authority. M16/M17 detach ordinary cooperative selections through copying, but custom copy protocols may retain aliases and execute before any Session request. The newer snapshot Tools retain their separately specified strict contracts. Use the formal Adapter/Session path for model requests. Calling file Tools directly makes authorization the caller's responsibility.
 
 ```python
 from tool_layer.experiment_tools import ExperimentEvidenceTools, ExperimentComparisonTools
@@ -60,6 +60,14 @@ Unknown names reject with `KeyError`; malformed arguments generally raise `TypeE
 
 `options_a`/`options_b` permit only `config_paths`, `test_metrics_file`, `test_metric_specs`, `metrics_config`. The Adapter resolves model paths using trusted `experiment_context`; the bound Tool then checks the exact selected roots. Snapshot Tools accept no extra model options. Default Registry behavior remains unchanged.
 
+### M16/M17 legacy Python input contract
+
+`ExperimentEvidenceTools` and `ExperimentComparisonTools`, together with the M16 composition and M17 comparison functions below, follow the [M16/M17 Legacy Trusted-Host Python API (v1)](v1_security.md#m16-m17-legacy-trusted-host-python-v1). Supporting Readers include `read_config_evidence(config_path, field_paths)` and `read_test_metrics(csv_path, metric_specs)`; they do not supply Session authorization for direct calls.
+
+Valid built-in containers and project objects retain their existing role-specific schemas. Reviewed, finite and stable custom `Mapping`/`Sequence` implementations remain compatible wherever the existing API accepts them. ABC membership or a host-supplied instance alone is not safety evidence. Before binding, the host reviews nested values, metadata, dynamic attributes, traversal and copy protocols. Constructors can call mapping methods and `deepcopy`; copying a custom object does not guarantee detachment. The host must ensure required copy isolation or safe immutability and keep bound selections stable. M17 invocation also copies selections and can supplement target metric specs, including through retained aliases.
+
+M16/M17 do not guarantee zero-callback rejection of arbitrary Python objects. Direct Core, Reader, Tool and Adapter callers own their input trust and applicable authority; a direct Adapter call does not create a missing Session path policy. See the versioned contract for H1–H10 responsibilities, resource limits and residual risks. External custom hosts/plugins/SDK extensions remain **NOT AUDITED / HOST RESPONSIBILITY**. Public signatures and result schemas are unchanged.
+
 ## Public Core / Reader entry points
 
 ```python
@@ -76,7 +84,7 @@ from artifact_observation import validate_artifact_binding, project_artifact_obs
 | Function | Inputs and return | Trust / failure semantics |
 | --- | --- | --- |
 | `analyze_experiment_evidence(experiment_dir, *, config_paths=(), test_metrics_file=None, test_metric_specs=(), metrics_config=None, include_diagnostics=False) -> dict` | M16 composition: configuration, validation and optional Test report | Performs selected reads; unavailable CSV evidence retains Reader status; argument/path/unexpected errors propagate |
-| `compare_experiment_evidence(evidence_a, evidence_b, *, targets) -> dict` | M17 `targets`, alignment, comparability, `calculation`, configuration differences | Pure comparison; M11 unknown can permit a limited numerical observation, incompatibility blocks |
+| `compare_experiment_evidence(evidence_a, evidence_b, *, targets) -> dict` | M17 `targets`, alignment, comparability, `calculation`, configuration differences | Core-owned computation performs no acquisition; supplied Python protocols may have effects. M11 unknown can permit a limited numerical observation, incompatibility blocks |
 | `aggregate_replicate_evidence(executions, *, group_declaration, targets) -> dict` | M18 `group`, `targets`, coverage and descriptive statistics | Full-group eligibility, no subgroup salvage or acquisition |
 | `compare_replicate_groups(group_a, group_b, *, targets) -> dict` | M19 `groups`, target sides and `comparison.raw_delta` | Real M18 twice; unpaired B.mean minus A.mean |
 | `compare_paired_replicates(group_a, group_b, *, pairing_declaration, targets) -> dict` | M22 `pairing_coverage`, `pair_results`, statistics and claim boundaries | Exact plain data; full execution identity, explicit pairs; no automatic pairing or inference |
@@ -85,7 +93,7 @@ from artifact_observation import validate_artifact_binding, project_artifact_obs
 | `validate_artifact_binding(binding) -> dict` | Detached validated binding | Pure validation; exact plain fields only |
 | `project_artifact_observation(binding, capture) -> dict` | Fixed observation schema from validated capture | Pure projection; calling it with host data is not evidence that a Reader ran |
 
-The pure comparison/aggregation functions do not access filesystem, Memory or network. Schema, size or type violations raise rather than silently truncate. Read complete input builders in [the fixture module](../examples/v1_workflow_fixtures.py); those builders supply inputs, not computed results.
+The comparison/aggregation implementations do not themselves acquire filesystem, Memory or network data. This describes core-owned operations, not a sandbox around caller-supplied Python protocols: M16/M17 traversal and copying can execute such protocols and their side effects. M18/M19 retain their separately scoped exact-type, fixed-field and bounded snapshot guarantees. Schema, size or type violations raise rather than silently truncate where the respective contract specifies a rejection; M16/M17 output limits are not a uniform pre-traversal input bound. Read complete input builders in [the fixture module](../examples/v1_workflow_fixtures.py); those builders supply inputs, not computed results.
 
 ### Input shapes
 
