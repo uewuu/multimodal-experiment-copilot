@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import json
 from typing import Callable
 
+from experiment_path_access import _derived_access_scope
 from tool_layer import invoke_tool, list_tools
 
 from .tool_binding import _get_bound_tools
@@ -337,11 +338,12 @@ def _execute_tool_calls(
             if policy is None
             else policy(function_name, arguments)
         )
-        result = (
-            invoke_tool(function_name, secured_arguments)
-            if collection is None
-            else collection.invoke_tool(function_name, secured_arguments)
-        )
+        with _derived_access_scope(policy, function_name):
+            result = (
+                invoke_tool(function_name, secured_arguments)
+                if collection is None
+                else collection.invoke_tool(function_name, secured_arguments)
+            )
         _check_turn_deadline()
         if progress_callback is not None:
             progress_callback("tool_result_serialization")

@@ -6,13 +6,14 @@ from pathlib import Path
 import yaml
 
 from metrics import MetricSpec, parse_metric_specs
+from experiment_path_access import _authorize_derived_file
 
 
 def read_metric_specs_config(
     config_path: Path,
 ) -> tuple[MetricSpec, ...]:
     """读取并解析独立指标 YAML 配置。"""
-    with config_path.open(
+    with _authorize_derived_file(config_path).open(
         "r",
         encoding="utf-8",
     ) as file:

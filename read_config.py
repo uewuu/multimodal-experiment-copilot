@@ -5,13 +5,14 @@ from pathlib import Path
 
 import yaml
 
+from experiment_path_access import _authorize_derived_file
 
 CONFIG_PATH = Path("examples/demo_experiment/hparams.yaml")
 
 
 def read_config(config_path: Path) -> dict:
     """读取 YAML 配置文件，并返回其中的配置字典。"""
-    with config_path.open("r", encoding="utf-8") as file:
+    with _authorize_derived_file(config_path).open("r", encoding="utf-8") as file:
         data = yaml.safe_load(file)
 
     if not isinstance(data, dict):

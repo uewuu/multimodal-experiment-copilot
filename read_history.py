@@ -1,13 +1,14 @@
 from pathlib import Path
 import json
 
+from experiment_path_access import _authorize_derived_file
 
 HISTORY_PATH = Path("examples/demo_experiment/history.json")
 
 
 def read_history(history_path: Path) -> dict:
     """读取训练历史 JSON 文件，并返回字典。"""
-    with history_path.open("r", encoding="utf-8") as file:
+    with _authorize_derived_file(history_path).open("r", encoding="utf-8") as file:
         data = json.load(file)
 
     if not isinstance(data, dict):
