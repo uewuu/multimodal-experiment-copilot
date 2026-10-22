@@ -8,6 +8,7 @@ from .failure_observability import (
 )
 from .runtime_observability import (
     CopilotObservedResult,
+    _run_copilot_turn_with_observability,
     run_copilot_turn_with_observability,
 )
 from .session import CopilotSession
@@ -56,6 +57,29 @@ class CopilotService:
             experiment_context=experiment_context,
             turn_timeout_seconds=turn_timeout_seconds,
             on_failure=on_failure,
+            **request_options,
+        )
+
+    def _run_with_observability(
+        self,
+        question: str,
+        *,
+        experiment_context: dict[str, object] | None = None,
+        turn_timeout_seconds: float | None = None,
+        on_failure: (
+            Callable[[CopilotFailureObservation], None] | None
+        ) = None,
+        **request_options: object,
+    ) -> CopilotObservedResult:
+        """Adapt complete Runtime observations for internal consumers."""
+        return _run_copilot_turn_with_observability(
+            self._client,
+            None,
+            on_failure,
+            model=self._model,
+            question=question,
+            experiment_context=experiment_context,
+            turn_timeout_seconds=turn_timeout_seconds,
             **request_options,
         )
 

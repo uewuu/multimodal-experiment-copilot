@@ -3,6 +3,12 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from experiment_path_access import (
+    _PathAuthorizationError,
+    _authorize_derived_directory,
+    _is_experiment_directory,
+    _has_experiment_files,
+)
 from diagnostics import (
     build_comparison_diagnostics,
     build_comparison_facts,
@@ -118,14 +124,15 @@ def find_experiment_dirs(root_dir: Path) -> list[Path]:
 
     experiment_dirs: list[Path] = []
 
+    _authorize_derived_directory(root_dir)
     for candidate_dir in root_dir.iterdir():
-        if not candidate_dir.is_dir():
+        if not _is_experiment_directory(candidate_dir):
             continue
 
         config_path = candidate_dir / CONFIG_FILENAME
         history_path = candidate_dir / HISTORY_FILENAME
 
-        if config_path.is_file() and history_path.is_file():
+        if _has_experiment_files(config_path, history_path):
             experiment_dirs.append(candidate_dir)
 
     return sorted(experiment_dirs)
@@ -149,6 +156,7 @@ def analyze_experiment_dirs(
         history_path = experiment_dir / HISTORY_FILENAME
 
         try:
+            _authorize_derived_directory(experiment_dir)
             if validated_metric_specs is None:
                 summary = build_experiment_summary(
                     config_path=config_path,
@@ -160,6 +168,8 @@ def analyze_experiment_dirs(
                     history_path=history_path,
                     metric_specs=validated_metric_specs,
                 )
+        except _PathAuthorizationError:
+            raise
         except Exception as error:
             failed_experiments.append(
                 {

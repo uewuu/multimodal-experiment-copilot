@@ -3,12 +3,14 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from typing import Callable
 
+from experiment_path_access import _derived_access_scope
 from tool_layer import invoke_tool, list_tools
 
+from .tool_binding import _get_bound_tools
 from .tool_result_governance import _validate_tool_result_bytes
 from .turn_deadline import (
     _check_turn_deadline,
@@ -39,10 +41,81 @@ def _experiment_path_policy_scope(
 
 
 @dataclass(frozen=True, slots=True)
+class _ProviderUsageEvidence:
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+@dataclass(slots=True)
+class _ProviderEvidence:
+    provider_request_count: int = 0
+    provider_usages: list[_ProviderUsageEvidence] = field(default_factory=list)
+
+    @property
+    def provider_response_count(self) -> int:
+        return len(self.provider_usages)
+
+    def request_started(self) -> None:
+        self.provider_request_count += 1
+
+    def response_received(self, response: object) -> None:
+        self.provider_usages.append(_normalize_provider_usage(response))
+
+
+@dataclass(frozen=True, slots=True)
 class _ToolCallCycleTrace:
     response: object
     assistant_message: dict[str, object] | None
     tool_messages: tuple[dict[str, object], ...]
+    provider_request_count: int
+    provider_response_count: int
+    provider_usages: tuple[_ProviderUsageEvidence, ...]
+
+
+def _read_attribute(value: object, name: str) -> object:
+    try:
+        return getattr(value, name, _MISSING)
+    except Exception:
+        return _MISSING
+
+
+def _normalize_token_count(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _normalize_provider_usage(response: object) -> _ProviderUsageEvidence:
+    usage = _read_attribute(response, "usage")
+    if usage is _MISSING or usage is None:
+        return _ProviderUsageEvidence()
+    return _ProviderUsageEvidence(
+        input_tokens=_normalize_token_count(
+            _read_attribute(usage, "prompt_tokens")
+        ),
+        output_tokens=_normalize_token_count(
+            _read_attribute(usage, "completion_tokens")
+        ),
+        total_tokens=_normalize_token_count(
+            _read_attribute(usage, "total_tokens")
+        ),
+    )
+
+
+def _build_cycle_trace(
+    *,
+    response: object,
+    assistant_message: dict[str, object] | None,
+    tool_messages: tuple[dict[str, object], ...],
+    evidence: _ProviderEvidence,
+) -> _ToolCallCycleTrace:
+    return _ToolCallCycleTrace(
+        response=response,
+        assistant_message=assistant_message,
+        tool_messages=tool_messages,
+        provider_request_count=evidence.provider_request_count,
+        provider_response_count=evidence.provider_response_count,
+        provider_usages=tuple(evidence.provider_usages),
+    )
 
 
 def create_tool_call_response(
@@ -65,6 +138,7 @@ def create_tool_call_response(
 def _create_tool_call_response(
     client: object,
     progress_callback: _ProgressCallback | None,
+    provider_evidence: _ProviderEvidence | None = None,
     /,
     *,
     model: str,
@@ -80,7 +154,8 @@ def _create_tool_call_response(
     if "tools" in request_options:
         raise TypeError("tools are provided by the tool registry")
 
-    tools = list_tools()
+    collection = _get_bound_tools()
+    tools = list_tools() if collection is None else collection.list_tools()
     remaining = _remaining_turn_seconds()
     provider_options = request_options
     if remaining is not None:
@@ -90,12 +165,16 @@ def _create_tool_call_response(
         }
     if progress_callback is not None:
         progress_callback("provider_request_started")
+    if provider_evidence is not None:
+        provider_evidence.request_started()
     response = client.chat.completions.create(
         model=model,
         messages=messages,
         tools=tools,
         **provider_options,
     )
+    if provider_evidence is not None:
+        provider_evidence.response_received(response)
     if progress_callback is not None:
         progress_callback("provider_response_received")
     _check_turn_deadline()
@@ -248,6 +327,7 @@ def _execute_tool_calls(
 
     messages: list[dict] = []
     cumulative_result_bytes = 0
+    collection = _get_bound_tools()
     for tool_call_id, function_name, arguments in validated_calls:
         _check_turn_deadline()
         if progress_callback is not None:
@@ -258,7 +338,12 @@ def _execute_tool_calls(
             if policy is None
             else policy(function_name, arguments)
         )
-        result = invoke_tool(function_name, secured_arguments)
+        with _derived_access_scope(policy, function_name):
+            result = (
+                invoke_tool(function_name, secured_arguments)
+                if collection is None
+                else collection.invoke_tool(function_name, secured_arguments)
+            )
         _check_turn_deadline()
         if progress_callback is not None:
             progress_callback("tool_result_serialization")
@@ -370,15 +455,22 @@ def _build_assistant_tool_call_message(
 def _run_tool_call_cycle_with_trace(
     client: object,
     progress_callback: _ProgressCallback | None = None,
+    provider_evidence: _ProviderEvidence | None = None,
     /,
     *,
     model: str,
     messages: list[dict],
     **request_options: object,
 ) -> _ToolCallCycleTrace:
+    evidence = (
+        provider_evidence
+        if provider_evidence is not None
+        else _ProviderEvidence()
+    )
     first_response = _create_tool_call_response(
         client,
         progress_callback,
+        evidence,
         model=model,
         messages=messages,
         **request_options,
@@ -388,10 +480,11 @@ def _run_tool_call_cycle_with_trace(
         progress_callback,
     )
     if assistant_message is None:
-        return _ToolCallCycleTrace(
+        return _build_cycle_trace(
             response=first_response,
             assistant_message=None,
             tool_messages=(),
+            evidence=evidence,
         )
 
     tool_messages = tuple(
@@ -402,16 +495,19 @@ def _run_tool_call_cycle_with_trace(
         assistant_message,
         *tool_messages,
     ]
-    return _ToolCallCycleTrace(
-        response=_create_tool_call_response(
-            client,
-            progress_callback,
-            model=model,
-            messages=follow_up_messages,
-            **request_options,
-        ),
+    final_response = _create_tool_call_response(
+        client,
+        progress_callback,
+        evidence,
+        model=model,
+        messages=follow_up_messages,
+        **request_options,
+    )
+    return _build_cycle_trace(
+        response=final_response,
         assistant_message=assistant_message,
         tool_messages=tool_messages,
+        evidence=evidence,
     )
 
 
