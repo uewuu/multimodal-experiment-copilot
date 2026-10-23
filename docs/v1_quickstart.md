@@ -1,6 +1,6 @@
 # V1 source quickstart
 
-Use Python 3.11 and run from the repository root. This is source delivery; there is no supported `pip install -e .`, wheel or PyPI package. A fresh Windows Python 3.11.15 venv with the release constraints passed dependency installation, imports and the existing plus A-G demos. Ubuntu 24.04 / Python 3.11.17 also passed the explicit portable subset, existing demo and A-F; G correctly reported unsupported. Release acceptance remains pending; see [testing evidence](v1_testing_release.md).
+Use Python 3.11 and run from the repository root. This is source delivery; there is no supported `pip install -e .`, wheel or PyPI package. Historical fresh-environment checks passed dependency installation, imports and the existing plus A-G demos on Windows Python 3.11.15; Ubuntu 24.04 / Python 3.11.17 passed the portable subset, existing demo and A-F, while G correctly reported unsupported. M9–M23 is now merged into main, with Windows full and Linux portable acceptance in post-merge Run #70; see [testing evidence](v1_testing_release.md).
 
 ## Get the source and dependencies
 
@@ -9,7 +9,7 @@ git clone https://github.com/uewuu/multimodal-experiment-copilot.git
 cd multimodal-experiment-copilot
 ```
 
-Use a maintainer-provided revision containing the M23 examples. Until that work is published, a default-branch clone may not contain this document or the new demo. No release tag is assigned by this guide.
+The default `main` branch includes this guide and both demos. The verified V1 integration baseline is commit `e437795e041247bba9ae9c83b7af37a77ae0f706` (PR #59). The historical `v0.1.0` Release predates this integration; no new `v0.2.0` tag or Release has been published.
 
 Windows PowerShell:
 
@@ -27,7 +27,7 @@ python3.11 -m venv .venv
 python -m pip install -c constraints-release-py311.txt -r requirements.txt
 ```
 
-The base requirements include PyYAML, pytest and the HTTP adapter dependencies. The demos need no API keys or provider SDK. Only for real OpenAI-compatible provider use:
+The base [requirements](../requirements.txt) include PyYAML, pytest and the HTTP adapter dependencies. Apply the [Python 3.11 constraints](../constraints-release-py311.txt) as shown above: the current pytest requirement is `>=9.0.3,<10`, pinned to `9.0.3`; historical `8.3.4` results do not describe this installation. The demos need no API keys or provider SDK. Only for real OpenAI-compatible provider use, add the separate [provider requirements](../requirements-openai.txt):
 
 ```bash
 python -m pip install -c constraints-release-py311.txt -r requirements-openai.txt
