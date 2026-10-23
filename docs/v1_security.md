@@ -6,6 +6,14 @@ The host owns client configuration, Tool binding, experiment roots, expected ros
 
 M21 additionally validates the opened object through a Windows handle. Lexical/path authorization alone is not opened-object identity. Its model schema exposes only `experiment_dir` with the single value `"."`; the host binds the filename and root. Snapshot Tools C–F accept an empty object and cannot use model arguments to replace host data.
 
+## Default tool path containment
+
+On the host-authorized Adapter path for `analyze_experiment` and `compare_experiments`, the derived-path scope checks experiment directories and required `hparams.yaml` / `history.json` files during discovery, then rechecks directories and files before their reads. Optional `metrics_config` is also checked immediately before reading. Checks resolve targets against the host-authorized root and inspect link metadata and required directory/ordinary-file types. An internal symlink or Windows junction is allowed when its resolved target remains within that authority and passes these checks; the target may be outside a selected scan subdirectory but still inside the host root. External targets, broken/cyclic links, unknown reparse points and unsupported object types fail closed.
+
+Ordinary per-experiment parsing errors are collected as failed experiments so comparison can continue. A derived-path authorization violation instead propagates and fails the entire tool call, including a mixed batch; no partial successful comparison is returned. Missing ordinary required files remain discovery exclusions. This scope is installed only when an Adapter path policy is present for the two default tools; direct Core/Reader calls do not acquire missing authority automatically. See [the scope and checks](../experiment_path_access.py), [comparison error handling](../compare_experiments.py) and [containment regressions](../tests/test_default_tool_path_containment.py).
+
+These checks assume a trusted, host-managed filesystem and stable host authority. Read-time rechecks catch changes after scanning, but validation and the later path-based open are separate operations: a malicious concurrent namespace change can still race them (TOCTOU). This is not an atomic open, complete sandbox or general defense against a hostile filesystem. It does not inherit [M21's native handle guarantees](#m21-native-boundary), where metadata and bytes come from the validated Windows handle; M21 itself retains the residual risks described below.
+
 ## Claims that remain separate
 
 | Evidence | Supports | Does not establish |
